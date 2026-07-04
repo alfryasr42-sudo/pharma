@@ -1,11 +1,15 @@
 from PyQt5.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton
 from PyQt5.QtCore import Qt, QTimer, QDateTime, pyqtSignal
+from version import VERSION
+from utils.update_checker import UpdateChecker, show_update_dialog
+
 
 class TopBar(QFrame):
     navigate = pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._update_available = False
         self.setFixedHeight(80)
         self.setStyleSheet("""
             QFrame {
@@ -40,10 +44,11 @@ class TopBar(QFrame):
             #sensorErr { color: #ff6b6b; }
         """)
         self._setup_ui()
+        self._checker = UpdateChecker(self)
+        self._checker.finished.connect(self._on_update_found)
 
     def _setup_ui(self):
         layout = QHBoxLayout()
-        # نفرض اتجاه من اليمين لليسار لتثبيت الأماكن
         layout.setDirection(QHBoxLayout.RightToLeft)
         layout.setContentsMargins(20, 0, 20, 0)
         layout.setSpacing(15)
@@ -56,10 +61,17 @@ class TopBar(QFrame):
 
         layout.addStretch()
 
-        # Maintenance Sensor
-        self.maintenance_lbl = QLabel("🛠️ SYSTEM OK")
-        self.maintenance_lbl.setObjectName("sensorOk")
-        layout.addWidget(self.maintenance_lbl)
+        # Version label
+        self.version_lbl = QLabel(f"📦 v{VERSION}")
+        self.version_lbl.setStyleSheet("font-size:15px;color:rgba(255,255,255,180);background:transparent;padding:4px 10px;")
+        layout.addWidget(self.version_lbl)
+
+        # Update sensor (clickable)
+        self.update_lbl = QLabel("✅ Current")
+        self.update_lbl.setObjectName("sensorOk")
+        self.update_lbl.setCursor(Qt.PointingHandCursor)
+        self.update_lbl.mousePressEvent = lambda e: self._check_update()
+        layout.addWidget(self.update_lbl)
 
         # Internet Sensor
         self.internet_lbl = QLabel("🌐 ONLINE")
@@ -116,3 +128,17 @@ class TopBar(QFrame):
         loc = QLocale(QLocale.English, QLocale.UnitedStates)
         current = QDateTime.currentDateTime()
         self.time_lbl.setText("🕒 " + loc.toString(current, "hh:mm:ss AP"))
+
+    def _check_update(self):
+        self.update_lbl.setText("🔍 Checking...")
+        self._checker.check()
+
+    def _on_update_found(self, latest, url):
+        self.update_lbl.setText(f"⬆️ v{latest}")
+        self.update_lbl.setObjectName("sensorWarn")
+        self.update_lbl.style().unpolish(self.update_lbl)
+        self.update_lbl.style().polish(self.update_lbl)
+        show_update_dialog(self, latest, url)
+
+    def check_startup(self):
+        self._checker.check()

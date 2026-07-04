@@ -19,7 +19,6 @@ from views.login_dialog import LoginDialog
 from views.main_window import MainWindow
 from utils.backup import DatabaseBackup
 from utils.logger import setup_global_hook, get_logger
-from utils.update_checker import UpdateChecker, show_update_dialog
 
 
 def initialize_database():
@@ -72,10 +71,6 @@ def main():
 
     window = MainWindow(user_data)
     window.show()
-
-    checker = UpdateChecker(window)
-    checker.finished.connect(lambda v, u: show_update_dialog(window, v, u))
-    checker.check()
 
     ret = app.exec_()
 

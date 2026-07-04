@@ -5,6 +5,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QKeySequence
 from PyQt5.QtWidgets import QShortcut
+from version import VERSION
 from utils.modern_msgbox import ModernMessageBox as QMessageBox
 
 from database.connection import DatabaseManager
@@ -28,7 +29,7 @@ class MainWindow(QMainWindow):
         self.db = DatabaseManager()
         self.expiry_ctrl = ExpiryController()
         self.product_ctrl = ProductController()
-        self.setWindowTitle(f"PharmaSys - {user_data['full_name']}")
+        self.setWindowTitle(f"PharmaSys v{VERSION} - {user_data['full_name']}")
         self.setMinimumSize(1200, 750)
         # نافذة ملء الشاشة وبدون إطار
         self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
@@ -36,6 +37,7 @@ class MainWindow(QMainWindow):
         self._setup_ui()
         self._setup_hotkeys()
         QTimer.singleShot(500, self._check_alerts)
+        QTimer.singleShot(2000, self.top_bar.check_startup)
 
     def closeEvent(self, event):
         """منع الإغلاق العرضي - الإغلاق فقط عبر زر الخروج الداخلي"""
@@ -83,6 +85,7 @@ class MainWindow(QMainWindow):
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
         self.status_bar.setStyleSheet("background: #1a1a2e; color: rgba(255,255,255,150); padding: 4px;")
+        self.status_bar.showMessage(f"📦 PharmaSys v{VERSION} — {user_data['full_name']}", 5000)
 
     def _setup_hotkeys(self):
         QShortcut(QKeySequence("F1"), self, lambda: self._switch_view("debts"))

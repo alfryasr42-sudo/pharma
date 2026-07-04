@@ -1,0 +1,185 @@
+from PyQt5.QtWidgets import (
+    QMainWindow, QWidget, QVBoxLayout, QMessageBox,
+    QStackedWidget, QStatusBar, QApplication,
+)
+from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtGui import QKeySequence
+from PyQt5.QtWidgets import QShortcut
+from utils.modern_msgbox import ModernMessageBox as QMessageBox
+
+from database.connection import DatabaseManager
+from views.dashboard_widget import DashboardWidget
+from views.pos_widget import POSWidget
+from views.inventory_widget import InventoryWidget
+from views.debts_widget import DebtsWidget
+from views.doctors_widget import DoctorsWidget
+from views.settings_widget import SettingsWidget
+from views.reports_widget import ReportsWidget
+from views.top_bar import TopBar
+from controllers.expiry_controller import ExpiryController
+from controllers.product_controller import ProductController
+
+
+class MainWindow(QMainWindow):
+    def __init__(self, user_data: dict):
+        super().__init__()
+        self.user_data = user_data
+        self.is_admin = self.user_data.get("role") == "admin"
+        self.db = DatabaseManager()
+        self.expiry_ctrl = ExpiryController()
+        self.product_ctrl = ProductController()
+        self.setWindowTitle(f"PharmaSys - {user_data['full_name']}")
+        self.setMinimumSize(1200, 750)
+        # نافذة ملء الشاشة وبدون إطار
+        self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
+        self.showFullScreen()
+        self._setup_ui()
+        self._setup_hotkeys()
+        QTimer.singleShot(500, self._check_alerts)
+
+    def closeEvent(self, event):
+        """منع الإغلاق العرضي - الإغلاق فقط عبر زر الخروج الداخلي"""
+        event.ignore()
+
+
+    def _setup_ui(self):
+        central = QWidget()
+        self.setCentralWidget(central)
+        main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+
+        self.top_bar = TopBar()
+        self.top_bar.navigate.connect(self._on_navigate)
+        main_layout.addWidget(self.top_bar)
+        self.top_bar.home_btn.setVisible(False)
+
+        self.stack = QStackedWidget()
+
+        self.dashboard = DashboardWidget(self.user_data)
+        self.dashboard.navigate.connect(self._on_navigate)
+
+        self.pos_widget = POSWidget(self.user_data)
+        self.pos_widget.sale_completed.connect(self._on_sale_completed)
+
+        self.inventory_widget = InventoryWidget()
+        self.debts_widget = DebtsWidget()
+        self.doctors_widget = DoctorsWidget()
+        self.settings_widget = SettingsWidget(self.user_data)
+        self.settings_widget.users_changed.connect(self._on_users_changed)
+        self.reports_widget = ReportsWidget()
+
+        self.stack.addWidget(self.dashboard)     # 0
+        self.stack.addWidget(self.pos_widget)     # 1
+        self.stack.addWidget(self.inventory_widget)  # 2
+        self.stack.addWidget(self.debts_widget)   # 3
+        self.stack.addWidget(self.doctors_widget) # 4
+        self.stack.addWidget(self.settings_widget)  # 5
+        self.stack.addWidget(self.reports_widget)   # 6
+
+        main_layout.addWidget(self.stack)
+        central.setLayout(main_layout)
+
+        self.status_bar = QStatusBar()
+        self.setStatusBar(self.status_bar)
+        self.status_bar.setStyleSheet("background: #1a1a2e; color: rgba(255,255,255,150); padding: 4px;")
+
+    def _setup_hotkeys(self):
+        QShortcut(QKeySequence("F1"), self, lambda: self._switch_view("debts"))
+        QShortcut(QKeySequence("F2"), self, lambda: self._switch_view("pos"))
+        QShortcut(QKeySequence("F3"), self, lambda: self._switch_view("inventory"))
+        QShortcut(QKeySequence("F4"), self, lambda: self._switch_view("doctors"))
+        if self.is_admin:
+            QShortcut(QKeySequence("F5"), self, lambda: self._switch_view("settings"))
+        QShortcut(QKeySequence("Escape"), self, lambda: self._switch_view("dashboard"))
+        QShortcut(QKeySequence("Ctrl+Q"), self, self.close)
+
+    def _on_navigate(self, target):
+        if target == "logout":
+            self._logout()
+        elif target == "settings" and not self.is_admin:
+            QMessageBox.warning(self, "وصول ممنوع", "هذه الصفحة مخصصة لمدير النظام فقط")
+        else:
+            self._switch_view(target)
+
+    def _switch_view(self, view_name):
+        if view_name == "dashboard":
+            self.stack.setCurrentIndex(0)
+            self.status_bar.clearMessage()
+            self.top_bar.home_btn.setVisible(False)
+            self.dashboard._load_expired()
+            self.dashboard._load_low_stock()
+            return
+
+        self.top_bar.home_btn.setVisible(True)
+
+        if view_name == "settings" and not self.is_admin:
+            QMessageBox.warning(self, "وصول ممنوع", "هذه الصفحة مخصصة لمدير النظام فقط")
+            return
+
+        index_map = {
+            "pos": 1, "inventory": 2, "debts": 3,
+            "doctors": 4, "settings": 5, "reports": 6,
+        }
+        idx = index_map.get(view_name, 0)
+        self.stack.setCurrentIndex(idx)
+
+        name_map = {
+            "pos": "🛒 نقطة البيع", "inventory": "📦 المخزون",
+            "debts": "💰 الديون", "doctors": "👨‍⚕️ الأطباء",
+            "settings": "⚙️ الإعدادات", "reports": "📊 التقارير",
+        }
+        name = name_map.get(view_name, "")
+        self.status_bar.showMessage(f"📍 {name}")
+
+        if view_name == "debts":
+            self.debts_widget._load_debts()
+        if view_name == "settings":
+            self.settings_widget._load_users()
+        if view_name == "inventory":
+            self.inventory_widget._load_products()
+        if view_name == "reports":
+            self.reports_widget._load_today_report()
+
+    def _on_sale_completed(self, sale_id):
+        self._switch_view("pos")
+
+    def _on_users_changed(self):
+        QMessageBox.information(self, "تم", "تم تحديث بيانات المستخدمين\nسيتم تطبيق التغييرات عند تسجيل الدخول التالي")
+
+    def _check_alerts(self):
+        expired = self.expiry_ctrl.get_expired()
+        expiring = self.expiry_ctrl.get_expiring_soon(90)
+        low_stock = self.product_ctrl.get_low_stock()
+        alerts = []
+        if expired:
+            names = "\n".join(f"• {p['name']} (صلاحية: {p['expiry_date']})" for p in expired[:10])
+            alerts.append(f"⚠️ منتهية ({len(expired)}):\n{names}")
+        if expiring:
+            names = "\n".join(f"• {p['name']} (صلاحية: {p['expiry_date']})" for p in expiring[:10])
+            alerts.append(f"⏳ قرب الانتهاء ({len(expiring)}):\n{names}")
+        if low_stock:
+            names = "\n".join(f"• {p['name']} (المتبقي: {p['stock_quantity']})" for p in low_stock[:10])
+            alerts.append(f"📦 تحت الأمان ({len(low_stock)}):\n{names}")
+        if alerts:
+            QMessageBox.warning(self, "تنبيهات المخزون", "\n\n".join(alerts))
+
+    def _logout(self):
+        reply = QMessageBox.question(
+            self, "تسجيل الخروج", "هل تريد تسجيل الخروج؟",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        if reply == QMessageBox.Yes:
+            from views.login_dialog import LoginDialog
+            login = LoginDialog()
+            if login.exec_() == LoginDialog.Accepted:
+                # تحديث بيانات المستخدم وإعادة تهيئة النوافذ
+                self.user_data = login.user_data
+                self.is_admin = self.user_data.get("role") == "admin"
+                self.setWindowTitle(f"PharmaSys - {self.user_data['full_name']}")
+                # إعادة تحميل الداشبورد
+                self.dashboard.user_data = self.user_data
+                self._switch_view("dashboard")
+            else:
+                QApplication.instance().quit()
+

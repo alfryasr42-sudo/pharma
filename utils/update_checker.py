@@ -14,7 +14,7 @@ class UpdateChecker(QObject):
         self._manager.finished.connect(self._on_reply)
 
     def check(self):
-        url = "https://raw.githubusercontent.com/alfryasr42-sudo/pharma/main/version.json"
+        url = "https://raw.githubusercontent.com/alfryasr42-sudo/pharma/master/version.json"
         self._manager.get(QNetworkRequest(QUrl(url)))
 
     def _on_reply(self, reply):

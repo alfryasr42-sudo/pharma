@@ -9,11 +9,13 @@ else:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BASE_DIR)
 
+from utils.scaling import apply_scaling
+apply_scaling()
+
 from PyQt5.QtWidgets import QApplication, QMessageBox
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont
 
-from utils.scaling import get_scale_factor, sc, scale_stylesheet
 from database.connection import DatabaseManager
 from database.schema import migrate
 from views.login_dialog import LoginDialog
@@ -38,28 +40,26 @@ def shutdown_backup():
         pass
 
 
-def load_stylesheet(app, scale):
+def load_stylesheet(app):
     qss_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                             "resources", "styles", "style.qss")
     try:
         with open(qss_path, "r", encoding="utf-8") as f:
             qss = f.read()
-        app.setStyleSheet(scale_stylesheet(qss))
+        app.setStyleSheet(qss)
     except Exception:
         pass
 
 
 def main():
-    scale = get_scale_factor()
-
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
     app.setApplicationName("RTX")
     app.setApplicationVersion(VERSION)
 
-    font = QFont("Segoe UI", max(sc(10), 7))
+    font = QFont("Segoe UI", 10)
     app.setFont(font)
-    load_stylesheet(app, scale)
+    load_stylesheet(app)
 
     setup_global_hook()
     get_logger()

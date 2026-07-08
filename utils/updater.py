@@ -9,7 +9,7 @@ from urllib.request import urlopen, Request
 from urllib.error import URLError
 from version import VERSION
 
-UPDATE_URL = "https://raw.githubusercontent.com/alfryasr42-sudo/pharma/main/update_manifest.json"
+UPDATE_URL = "https://raw.githubusercontent.com/alfryasr42-sudo/pharma/master/update_manifest.json"
 
 
 def check_for_update():

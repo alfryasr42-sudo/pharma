@@ -1,4 +1,4 @@
-import re
+import os
 import ctypes
 
 
@@ -18,17 +18,7 @@ def get_scale_factor():
     return _SCALE
 
 
-def sc(value):
-    return int(value * get_scale_factor())
-
-
-def scale_stylesheet(qss_text):
+def apply_scaling():
     scale = get_scale_factor()
-    if scale >= 1.0:
-        return qss_text
-
-    def _scale_px(m):
-        num = int(m.group(1))
-        return f"{sc(num)}px"
-
-    return re.sub(r"(\d+)px", _scale_px, qss_text)
+    if scale < 1.0:
+        os.environ["QT_SCALE_FACTOR"] = str(scale)

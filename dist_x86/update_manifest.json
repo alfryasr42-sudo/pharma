@@ -1,5 +1,0 @@
-{
-  "version": "1.1.0",
-  "download_url": "https://github.com/alfryasr42-sudo/pharma/releases/download/v1.1.0/PharmaSys_x86.exe",
-  "release_notes": "v1.1.0\n- إضافة نظام المرونة (تلقائي): يتكيف مع حجم الشاشة تلقائياً\n- دعم شاشات 1366×768 والأجهزة القديمة\n- تحسين عام في أحجام الخطوط والحقول\n- دعم Windows 7 (32/64 بت)"
-}

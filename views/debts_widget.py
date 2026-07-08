@@ -28,7 +28,7 @@ _BORD  = "#334155"
 _GREEN = "#10b981"
 _BLUE  = "#38bdf8"
 _RED   = "#f87171"
-_AMBER = "#f59e0b"
+_TEAL = "#0d9488"
 _TEXT  = "#f1f5f9"
 _MUTED = "#94a3b8"
 
@@ -101,11 +101,11 @@ class DebtsWidget(QWidget):
         cards_row.setSpacing(10)
 
         self._cust_debt_card, self._cust_debt_val = self._stat_card(
-            "👤", "ديون العملاء", "0.00", _RED, "#7f1d1d30")
+            "👤", "ديون العملاء", "0", _RED, "#7f1d1d30")
         self._supp_debt_card, self._supp_debt_val = self._stat_card(
-            "🏪", "ديون المذاخر", "0.00", _AMBER, "#78350f30")
+            "🏪", "ديون المذاخر", "0", _TEAL, "#134e4a30")
         self._total_card, self._total_val = self._stat_card(
-            "💰", "إجمالي الديون", "0.00", _BLUE, "#0c4a6e30")
+            "💰", "إجمالي الديون", "0", _BLUE, "#0c4a6e30")
 
         cards_row.addWidget(self._cust_debt_card)
         cards_row.addWidget(self._supp_debt_card)
@@ -209,7 +209,7 @@ class DebtsWidget(QWidget):
 
         new_inv_btn = _btn("➕  فاتورة مجمعة جديدة", "#6366f1", "white", 13, 38)
         new_inv_btn.clicked.connect(self._show_bulk_purchase)
-        pay_btn = _btn("💵  تسديد للمذخر", _AMBER, "#0f172a", 13, 38)
+        pay_btn = _btn("💵  تسديد للمذخر", _TEAL, "#0f172a", 13, 38)
         pay_btn.clicked.connect(self._show_supplier_payment)
         hist_btn = _btn("📋  سجل الدفعات", "#334155", _MUTED, 13, 38)
         hist_btn.clicked.connect(self._show_supplier_history)
@@ -326,7 +326,7 @@ class DebtsWidget(QWidget):
             if d["status"] == "pending":
                 st_item.setForeground(QColor(_RED))
             elif d["status"] == "partial":
-                st_item.setForeground(QColor(_AMBER))
+                st_item.setForeground(QColor(_TEAL))
             else:
                 st_item.setForeground(QColor(_GREEN))
             t.setItem(i, 5, st_item)
@@ -382,7 +382,7 @@ class DebtsWidget(QWidget):
             if d["status"] == "pending":
                 st_item.setForeground(QColor(_RED))
             elif d["status"] == "partial":
-                st_item.setForeground(QColor(_AMBER))
+                st_item.setForeground(QColor(_TEAL))
             else:
                 st_item.setForeground(QColor(_GREEN))
             t.setItem(i, 6, st_item)
@@ -481,8 +481,8 @@ class CustomerPaymentDialog(QDialog):
         form.setSpacing(10)
 
         self.amount_spin = QDoubleSpinBox()
-        self.amount_spin.setRange(0.01, remaining)
-        self.amount_spin.setDecimals(2)
+        self.amount_spin.setRange(1, remaining)
+        self.amount_spin.setDecimals(0)
         self.amount_spin.setValue(remaining)
         self.amount_spin.setButtonSymbols(QDoubleSpinBox.NoButtons)
         self.amount_spin.setFixedHeight(40)
@@ -491,7 +491,7 @@ class CustomerPaymentDialog(QDialog):
             f"background:{_BG};border:1.5px solid {_BORD};border-radius:8px;color:{_GREEN}}}"
             f"QDoubleSpinBox:focus{{border-color:{_BLUE}}}"
         )
-        form.addRow(_lbl("المبلغ:"), self.amount_spin)
+        form.addRow(_lbl("المبلغ:"), self.amount_spin);
 
         self.notes_inp = QLineEdit()
         self.notes_inp.setPlaceholderText("ملاحظات (اختياري)")
@@ -541,23 +541,23 @@ class SupplierPaymentDialog(QDialog):
         lay.setContentsMargins(24, 20, 24, 20)
         lay.setSpacing(14)
 
-        lay.addWidget(_lbl("🏪  تسديد للمذخر", _AMBER, 18, True))
-        lay.addWidget(_lbl(f"المبلغ المتبقي:  {remaining:,.2f}", _RED, 16, True))
+        lay.addWidget(_lbl("🏪  تسديد للمذخر", _TEAL, 18, True))
+        lay.addWidget(_lbl(f"المبلغ المتبقي:  {remaining:,.0f}", _RED, 16, True))
 
         form = QFormLayout()
         form.setSpacing(10)
 
         self.amount_spin = QDoubleSpinBox()
-        self.amount_spin.setRange(0.01, remaining)
-        self.amount_spin.setDecimals(2)
+        self.amount_spin.setRange(1, remaining)
+        self.amount_spin.setDecimals(0)
         self.amount_spin.setValue(remaining)
         self.amount_spin.setButtonSymbols(QDoubleSpinBox.NoButtons)
         self.amount_spin.setFixedHeight(40)
         self.amount_spin.setStyleSheet(
             f"QDoubleSpinBox{{font-size:15px;font-weight:700;padding:6px 10px;"
-            f"background:{_BG};border:1.5px solid {_BORD};border-radius:8px;color:{_AMBER}}}"
+            f"background:{_BG};border:1.5px solid {_BORD};border-radius:8px;color:{_TEAL}}}"
         )
-        form.addRow(_lbl("المبلغ:"), self.amount_spin)
+        form.addRow(_lbl("المبلغ:"), self.amount_spin);
 
         self.notes_inp = QLineEdit()
         self.notes_inp.setPlaceholderText("ملاحظات")
@@ -570,7 +570,7 @@ class SupplierPaymentDialog(QDialog):
         lay.addLayout(form)
 
         btn_row = QHBoxLayout()
-        save_btn   = _btn("✅  تسديد", _AMBER, "#0f172a", 14, 42)
+        save_btn   = _btn("✅  تسديد", _TEAL, "#0f172a", 14, 42)
         cancel_btn = _btn("إلغاء", "#334155", _MUTED, 13, 42)
         save_btn.clicked.connect(self._save)
         cancel_btn.clicked.connect(self.reject)

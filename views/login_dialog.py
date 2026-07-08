@@ -198,7 +198,7 @@ class LoginDialog(QDialog):
         super().__init__(parent)
         self.db = DatabaseManager()
         self.selected_username = None
-        self.setWindowTitle("PharmaSys")
+        self.setWindowTitle("RTX")
         self.setFixedSize(580, 600)
         # إخفاء زر الإغلاق
         self.setWindowFlags(Qt.Dialog | Qt.WindowTitleHint | Qt.CustomizeWindowHint)
@@ -318,7 +318,7 @@ class LoginDialog(QDialog):
         layout.addWidget(logo_lbl)
         layout.addSpacing(2)
 
-        title = QLabel("PharmaSys")
+        title = QLabel("RTX")
         title.setAlignment(Qt.AlignCenter)
         title.setStyleSheet(
             "font-size: 34px; font-weight: 900; letter-spacing: 4px;"

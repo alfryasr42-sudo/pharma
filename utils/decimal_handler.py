@@ -1,4 +1,4 @@
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, ROUND_HALF_UP, ROUND_CEILING, ROUND_FLOOR
 
 PRECISION = Decimal("0.01")
 DECIMAL_ZERO = Decimal("0.00")
@@ -27,7 +27,22 @@ def from_decimal(value) -> str:
 
 def format_currency(value) -> str:
     d = to_decimal(value)
-    return f"{d:,.2f}"
+    return f"{d:,.0f}"
+
+
+def round_up_to_250(amount: Decimal) -> Decimal:
+    """Round a Decimal amount UP to the nearest 250 (Iraqi currency)."""
+    return (amount / Decimal("250")).quantize(Decimal("1"), rounding=ROUND_CEILING) * Decimal("250")
+
+
+def round_down_to_250(amount: Decimal) -> Decimal:
+    """Round a Decimal amount DOWN to the nearest 250 (Iraqi currency)."""
+    return (amount / Decimal("250")).quantize(Decimal("1"), rounding=ROUND_FLOOR) * Decimal("250")
+
+
+def round_to_nearest_250(amount: Decimal) -> Decimal:
+    """Round a Decimal amount to the NEAREST 250."""
+    return (amount / Decimal("250")).quantize(Decimal("1"), rounding=ROUND_HALF_UP) * Decimal("250")
 
 
 def sum_decimals(values: list) -> Decimal:

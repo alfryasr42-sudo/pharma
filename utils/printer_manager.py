@@ -49,7 +49,7 @@ class PrinterManager:
         # إعدادات بسيطة لصفحة الفحص
         font = QFont("Arial", 16, QFont.Bold)
         painter.setFont(font)
-        painter.drawText(100, 100, "PharmaSys - Test Print")
+        painter.drawText(100, 100, "RTX - Test Print")
         
         font = QFont("Arial", 12)
         painter.setFont(font)

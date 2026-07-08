@@ -4,6 +4,7 @@ from PyQt5.QtWidgets import (
     QDialog, QFormLayout, QDoubleSpinBox, QSpinBox,
     QMessageBox, QComboBox, QDateEdit, QAbstractItemView,
     QFrame, QSizePolicy, QScrollArea, QCompleter, QInputDialog,
+    QCheckBox,
 )
 from PyQt5.QtCore import Qt, QDate, QTimer, QStringListModel, QLocale
 from PyQt5.QtGui import QColor, QFont, QPainter, QLinearGradient, QBrush, QKeySequence
@@ -12,11 +13,12 @@ from utils.modern_msgbox import ModernMessageBox as QMessageBox
 
 from controllers.product_controller import ProductController
 from controllers.order_controller import OrderController
+from controllers.doctor_controller import DoctorController
 from views.bulk_purchase_dialog import BulkPurchaseDialog
 from controllers.supplier_controller import SupplierController
 from database.connection import DatabaseManager
 from utils.printer_manager import PrinterManager
-from utils.decimal_handler import to_decimal, format_currency, DECIMAL_ZERO
+from utils.decimal_handler import to_decimal, format_currency, DECIMAL_ZERO, round_to_nearest_250
 from decimal import Decimal
 from utils.logger import safe_operation
 
@@ -76,7 +78,7 @@ def _stat_card(icon, title, value_str, accent, bg_icon):
     return card, val
 
 
-def _alert_item(msg, color="#f59e0b"):
+def _alert_item(msg, color="#0d9488"):
     """عنصر تنبيه واحد في اللوحة الجانبية"""
     w = QFrame()
     w.setStyleSheet(
@@ -86,7 +88,7 @@ def _alert_item(msg, color="#f59e0b"):
     lay = QVBoxLayout(w)
     lay.setContentsMargins(8, 6, 8, 6)
     lay.setSpacing(2)
-    icon = "⚠" if color == "#f59e0b" else "⛔"
+    icon = "⚠" if color == "#0d9488" else "⛔"
     lbl = QLabel(f"{icon} {msg}")
     lbl.setWordWrap(True)
     lbl.setStyleSheet(
@@ -139,7 +141,7 @@ class InventoryWidget(QWidget):
         self._card_low, self._val_low = _stat_card(
             "🛒", "طلبات الشراء النشطة", "0", "#34d399", "#064e3b40")
         self._card_near, self._val_near = _stat_card(
-            "⚠", "مواد أوشكت على النفاد", "0", "#f59e0b", "#78350f40")
+            "⚠", "مواد أوشكت على النفاد", "0", "#0d9488", "#134e4a40")
         self._card_exp, self._val_exp = _stat_card(
             "⏰", "مواد منتهية الصلاحية", "0", "#f87171", "#7f1d1d40")
 
@@ -223,6 +225,17 @@ class InventoryWidget(QWidget):
         self.status_combo.addItem("❌  منتهي", "expired")
         self.status_combo.currentIndexChanged.connect(self._apply_filters)
         tool_row.addWidget(self.status_combo)
+
+        self._non_barcoded_chk = QCheckBox("غير مكودة")
+        self._non_barcoded_chk.setFixedHeight(42)
+        self._non_barcoded_chk.setCursor(Qt.PointingHandCursor)
+        self._non_barcoded_chk.setStyleSheet(
+            "QCheckBox{font-size:13px;font-weight:600;color:#94a3b8;spacing:6;}"
+            "QCheckBox::indicator{width:20px;height:20px;border-radius:4px;border:2px solid #334155;background:#0f172a;}"
+            "QCheckBox::indicator:checked{background:#38bdf8;border-color:#38bdf8;}"
+        )
+        self._non_barcoded_chk.stateChanged.connect(self._apply_filters)
+        tool_row.addWidget(self._non_barcoded_chk)
 
         main_col.addLayout(tool_row)
 
@@ -315,18 +328,22 @@ class InventoryWidget(QWidget):
         text = self.search_input.text().strip().lower()
         cat_id = self.cat_combo.currentData()
         status_key = self.status_combo.currentData()
+        non_bc_only = self._non_barcoded_chk.isChecked()
 
         filtered = []
         for p in self._all_products:
+            pd = dict(p)
+            if non_bc_only and pd.get("is_barcoded") != 0:
+                continue
             # text filter
             if text:
-                name = (dict(p).get("name") or "").lower()
-                bc = (dict(p).get("barcode") or "").lower()
+                name = (pd.get("name") or "").lower()
+                bc = (pd.get("barcode") or "").lower()
                 if text not in name and text not in bc:
                     continue
             # category filter
             if cat_id is not None:
-                if dict(p).get("category_id") != cat_id:
+                if pd.get("category_id") != cat_id:
                     continue
             # status filter
             if status_key:
@@ -367,7 +384,7 @@ class InventoryWidget(QWidget):
             if status == "expired":
                 qty_item.setForeground(QColor("#f87171"))
             elif status == "low":
-                qty_item.setForeground(QColor("#f59e0b"))
+                qty_item.setForeground(QColor("#0d9488"))
             else:
                 qty_item.setForeground(QColor("#34d399"))
             qty_item.setFont(QFont("Segoe UI", 15, QFont.Bold))
@@ -390,7 +407,7 @@ class InventoryWidget(QWidget):
                     if exp_date <= today:
                         exp_item.setForeground(QColor("#f87171"))
                     elif (exp_date - today).days <= 30:
-                        exp_item.setForeground(QColor("#f59e0b"))
+                        exp_item.setForeground(QColor("#0d9488"))
                     else:
                         exp_item.setForeground(QColor("#94a3b8"))
                 except Exception:
@@ -408,7 +425,7 @@ class InventoryWidget(QWidget):
             if status == "expired":
                 row_bg = QColor("#7f1d1d18")
             elif status == "low":
-                row_bg = QColor("#78350f18")
+                row_bg = QColor("#134e4a18")
             if row_bg:
                 for col in range(6):
                     item = self.table.item(i, col)
@@ -425,7 +442,7 @@ class InventoryWidget(QWidget):
         if status == "ok":
             icon, text, color, bg = "✅", "آمن", "#34d399", "#064e3b50"
         elif status == "low":
-            icon, text, color, bg = "⚠", "منخفض", "#f59e0b", "#78350f50"
+            icon, text, color, bg = "⚠", "منخفض", "#0d9488", "#134e4a50"
         else:
             icon, text, color, bg = "❌", "منتهي", "#f87171", "#7f1d1d50"
 
@@ -469,7 +486,7 @@ class InventoryWidget(QWidget):
                 
         if alerts:
             from utils.toast import ToastNotification
-            ToastNotification.show_message("\n".join(alerts), 50000, self.window())
+            ToastNotification.show_message("\n".join(alerts), 30000, self.window())
 
     # ─────── actions ───────
     def _on_edit_product(self, index):
@@ -515,8 +532,10 @@ class ProductDialog(QDialog):
         self._new_batch_mode = False    # True → add stock to existing
         self.product_ctrl = ProductController()
         self.supplier_ctrl = SupplierController()
+        self.doc_ctrl = DoctorController()
         self.db = DatabaseManager()
         self.printer_manager = PrinterManager()
+        self._deal_doctors = []  # list of {doctor_id, doctor_name, reward_value}
         self.setWindowTitle("تعديل المادة" if product else "إضافة مادة جديدة")
         self.setWindowFlags(Qt.Dialog | Qt.WindowTitleHint | Qt.CustomizeWindowHint)
         self.setMinimumSize(960, 600)
@@ -614,6 +633,15 @@ class ProductDialog(QDialog):
             self._barcode_status_lbl.setStyleSheet("font-size:11px;color:#4a6580;background:transparent;padding:0 4px")
             bc_row.addWidget(self._barcode_status_lbl)
             cl.addLayout(bc_row)
+
+            self._non_bc_chk = QCheckBox("🚫 بدون باركود (إضافة يدوية)")
+            self._non_bc_chk.setStyleSheet(
+                "QCheckBox{font-size:13px;font-weight:600;color:#94a3b8;spacing:6;}"
+                "QCheckBox::indicator{width:18px;height:18px;border-radius:4px;border:2px solid #334155;background:#0f172a;}"
+                "QCheckBox::indicator:checked{background:#0d9488;border-color:#0d9488;}"
+            )
+            self._non_bc_chk.stateChanged.connect(self._on_non_bc_toggled)
+            cl.addWidget(self._non_bc_chk)
 
             cl.addWidget(_fl("💊  اسم المادة"))
             self.name_input = QLineEdit()
@@ -721,7 +749,7 @@ class ProductDialog(QDialog):
             cl.addWidget(_fl("سعر الشراء — للباكيت / العبوة"))
             self.purchase_price_input = QDoubleSpinBox()
             self.purchase_price_input.setRange(0, 99999999)
-            self.purchase_price_input.setDecimals(2)
+            self.purchase_price_input.setDecimals(0)
             self.purchase_price_input.setLocale(locale_iqd)
             self.purchase_price_input.setGroupSeparatorShown(True)
             self.purchase_price_input.setFixedHeight(54)
@@ -815,7 +843,7 @@ class ProductDialog(QDialog):
             cl.addWidget(_fl("💵  سعر البيع — للقطعة / الشريط"))
             self.sale_price_input = QDoubleSpinBox()
             self.sale_price_input.setRange(0, 99999999)
-            self.sale_price_input.setDecimals(2)
+            self.sale_price_input.setDecimals(0)
             self.sale_price_input.setLocale(locale_iqd)
             self.sale_price_input.setGroupSeparatorShown(True)
             self.sale_price_input.setFixedHeight(54)
@@ -847,6 +875,79 @@ class ProductDialog(QDialog):
             cl.addWidget(sf)
 
         rc.addWidget(_card("💰", "التسعير", _setup_pricing))
+
+        # ── Doctor Deals Card ──
+        def _setup_deals(cl):
+            self._deal_enabled = QCheckBox("✅ تفعيل صفقة الأطباء")
+            self._deal_enabled.setStyleSheet("font-size:15px;font-weight:700;color:#34d399;background:transparent;spacing:8px")
+            self._deal_enabled.toggled.connect(self._on_deal_toggled)
+            cl.addWidget(self._deal_enabled)
+
+            # Doctor dropdown
+            doc_row = QHBoxLayout()
+            doc_row.setSpacing(6)
+            self._deal_doctor_combo = QComboBox()
+            self._deal_doctor_combo.addItem("-- اختر طبيب --", None)
+            docs = self.doc_ctrl.get_all()
+            for d in docs:
+                self._deal_doctor_combo.addItem(d["name"], d["id"])
+            self._deal_doctor_combo.setStyleSheet(
+                "QComboBox{background:#0b1120;border:1.5px solid #2a3f5f;border-radius:6px;"
+                "color:#cbd5e1;font-size:14px;padding:6px 10px;min-height:36px}"
+                "QComboBox::drop-down{border:none;width:22px}"
+                "QComboBox QAbstractItemView{background:#0b1120;color:#cbd5e1;"
+                "selection-background-color:#7c3aed;font-size:13px}"
+            )
+            doc_row.addWidget(self._deal_doctor_combo, 1)
+
+            add_doc_btn = QPushButton("➕ إضافة")
+            add_doc_btn.setFixedHeight(40)
+            add_doc_btn.setCursor(Qt.PointingHandCursor)
+            add_doc_btn.setStyleSheet(
+                "QPushButton{background:#7c3aed;color:white;border:none;"
+                "border-radius:6px;font-size:13px;font-weight:700;padding:0 18px}"
+                "QPushButton:hover{background:#6d28d9}"
+            )
+            add_doc_btn.clicked.connect(self._on_add_deal_doctor)
+            doc_row.addWidget(add_doc_btn)
+            cl.addLayout(doc_row)
+
+            # Doctors table: name | deal% | discount% | remove
+            self._deal_table = QTableWidget()
+            self._deal_table.setColumnCount(4)
+            self._deal_table.setHorizontalHeaderLabels(["الطبيب", "ديل %", "تخفيض %", ""])
+            self._deal_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+            self._deal_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+            self._deal_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+            self._deal_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
+            self._deal_table.verticalHeader().setVisible(False)
+            self._deal_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+            self._deal_table.setAlternatingRowColors(True)
+            self._deal_table.setMaximumHeight(180)
+            self._deal_table.setStyleSheet(
+                "QTableWidget{background:#0b1120;border:1px solid #1e2d45;border-radius:6px;"
+                "color:#cbd5e1;gridline-color:transparent;alternate-background-color:#0f172a;font-size:13px}"
+                "QHeaderView::section{background:#0b1120;color:#64748b;padding:4px;border:none;"
+                "border-bottom:1px solid #1e2d45;font-size:12px;font-weight:700}"
+                "QTableWidget::item{padding:3px 6px;border-bottom:1px solid rgba(255,255,255,0.03)}"
+            )
+            cl.addWidget(self._deal_table)
+
+            pr_row = QHBoxLayout()
+            pr_row.setSpacing(6)
+            prlbl = QLabel("💳 سعر المريض:")
+            prlbl.setStyleSheet("font-size:14px;font-weight:700;color:#34d399;background:transparent")
+            pr_row.addWidget(prlbl)
+            self._patient_price_lbl = QLabel("—")
+            self._patient_price_lbl.setStyleSheet("font-size:18px;font-weight:800;color:#34d399;background:transparent")
+            pr_row.addWidget(self._patient_price_lbl)
+            self._patient_price_lbl.setVisible(False)
+            pr_row.addStretch()
+            cl.addLayout(pr_row)
+
+        rc.addWidget(_card("🏥", "صفقات الأطباء", _setup_deals))
+        # Hide deal fields initially (checkbox starts unchecked)
+        self._on_deal_toggled(False)
         rc.addStretch()
 
         body.addLayout(lc, 1)
@@ -877,6 +978,180 @@ class ProductDialog(QDialog):
         btn_row.addWidget(cancel_btn)
         btn_row.addStretch()
         main.addLayout(btn_row)
+
+    # ── Doctor Deal Handlers ─────────────────────────────────────
+    def _on_deal_toggled(self, enabled):
+        self._deal_doctor_combo.setVisible(enabled)
+        self._deal_table.setVisible(enabled)
+        self._patient_price_lbl.setVisible(enabled)
+        self._patient_price_lbl.setText("—")
+        if enabled:
+            self._update_patient_price()
+
+    def _on_add_deal_doctor(self):
+        doc_id = self._deal_doctor_combo.currentData()
+        if doc_id:
+            # Selected existing doctor
+            doctors = self.doc_ctrl.get_all()
+            matched = [d for d in doctors if d["id"] == doc_id]
+            if matched:
+                doc = matched[0]
+                if any(d["doctor_id"] == doc["id"] for d in self._deal_doctors):
+                    QMessageBox.information(self, "", f"الطبيب {doc['name']} مضاف مسبقاً")
+                    return
+                self._deal_doctors.append({
+                    "doctor_id": doc["id"],
+                    "doctor_name": doc["name"],
+                    "deal_pct": "0",
+                    "discount_pct": "0",
+                })
+                self._deal_doctor_combo.setCurrentIndex(0)
+                self._refresh_deal_table()
+                return
+        # No doctor selected → open add dialog
+        dlg = QDialog(self)
+        dlg.setWindowTitle("إضافة طبيب جديد")
+        dlg.setWindowFlags(Qt.Dialog | Qt.WindowTitleHint | Qt.CustomizeWindowHint)
+        dlg.setStyleSheet(
+            "QDialog{background:#141d2e;color:#f1f5f9}"
+            "QLabel{color:#64748b;font-size:16px;background:transparent}"
+            "QLineEdit{background:transparent;border:none;border-bottom:2px solid #2a3f5f;"
+            "color:#f1f5f9;font-size:18px;font-weight:600;padding:6px 4px}"
+            "QLineEdit:focus{border-bottom:2px solid #4a8fe7}"
+        )
+        dlg.setFixedSize(360, 180)
+        lay = QVBoxLayout(dlg)
+        lay.setSpacing(12)
+        lay.setContentsMargins(20, 18, 20, 18)
+        title = QLabel("➕ إضافة طبيب جديد")
+        title.setStyleSheet("font-size:20px;font-weight:800;color:#f1f5f9;background:transparent")
+        lay.addWidget(title)
+        name_inp = QLineEdit()
+        name_inp.setPlaceholderText("اسم الطبيب")
+        lay.addWidget(name_inp)
+        btn_row = QHBoxLayout()
+        save_btn = QPushButton("💾 حفظ")
+        save_btn.setStyleSheet(
+            "QPushButton{background:#059669;color:white;border:none;"
+            "border-radius:8px;font-size:16px;font-weight:700;padding:10px 28px}"
+            "QPushButton:hover{background:#047857}"
+        )
+        cancel_btn = QPushButton("إلغاء")
+        cancel_btn.setStyleSheet(
+            "QPushButton{background:#141d2e;color:#64748b;border:1px solid #2a3f5f;"
+            "border-radius:8px;font-size:16px;font-weight:600;padding:10px 28px}"
+        )
+        save_btn.clicked.connect(dlg.accept)
+        cancel_btn.clicked.connect(dlg.reject)
+        btn_row.addWidget(save_btn)
+        btn_row.addWidget(cancel_btn)
+        lay.addLayout(btn_row)
+        if dlg.exec_() != QDialog.Accepted:
+            return
+        doc_name = name_inp.text().strip()
+        if not doc_name:
+            return
+        try:
+            new_id = self.doc_ctrl.create({"name": doc_name})
+            # Refresh combo
+            self._deal_doctor_combo.clear()
+            self._deal_doctor_combo.addItem("-- اختر طبيب --", None)
+            for d in self.doc_ctrl.get_all():
+                self._deal_doctor_combo.addItem(d["name"], d["id"])
+            self._deal_doctor_combo.setCurrentIndex(0)
+        except Exception as e:
+            QMessageBox.critical(self, "خطأ", f"فشل إضافة الطبيب: {e}")
+            return
+
+    def _on_remove_deal_doctor(self, doctor_id):
+        self._deal_doctors = [d for d in self._deal_doctors if d["doctor_id"] != doctor_id]
+        self._refresh_deal_table()
+
+    def _refresh_deal_table(self):
+        self._deal_table.setRowCount(len(self._deal_doctors))
+        for i, doc in enumerate(self._deal_doctors):
+            name_item = QTableWidgetItem(doc["doctor_name"])
+            name_item.setFont(QFont("Segoe UI", 13))
+            self._deal_table.setItem(i, 0, name_item)
+
+            deal_spin = QDoubleSpinBox()
+            deal_spin.setRange(0, 100)
+            deal_spin.setDecimals(1)
+            deal_spin.setValue(float(doc["deal_pct"]))
+            deal_spin.setSuffix(" %")
+            deal_spin.setFixedHeight(30)
+            deal_spin.setStyleSheet(
+                "QDoubleSpinBox{background:#0f172a;border:1.5px solid #2a3f5f;border-radius:4px;"
+                "color:#7ba3ff;font-size:13px;font-weight:700;padding:2px 4px}"
+            )
+            deal_spin.valueChanged.connect(lambda val, idx=i: self._on_deal_pct_changed(idx, "deal_pct", val))
+            self._deal_table.setCellWidget(i, 1, deal_spin)
+
+            disc_spin = QDoubleSpinBox()
+            disc_spin.setRange(0, 100)
+            disc_spin.setDecimals(1)
+            disc_spin.setValue(float(doc["discount_pct"]))
+            disc_spin.setSuffix(" %")
+            disc_spin.setFixedHeight(30)
+            disc_spin.setStyleSheet(
+                "QDoubleSpinBox{background:#0f172a;border:1.5px solid #2a3f5f;border-radius:4px;"
+                "color:#7ba3ff;font-size:13px;font-weight:700;padding:2px 4px}"
+            )
+            disc_spin.valueChanged.connect(lambda val, idx=i: self._on_deal_pct_changed(idx, "discount_pct", val))
+            self._deal_table.setCellWidget(i, 2, disc_spin)
+
+            remove_btn = QPushButton("✕")
+            remove_btn.setFixedSize(28, 28)
+            remove_btn.setCursor(Qt.PointingHandCursor)
+            remove_btn.setStyleSheet(
+                "QPushButton{background:#7f1d1d;color:#fca5a5;border:none;border-radius:14px;font-size:12px;font-weight:700}"
+                "QPushButton:hover{background:#991b1b;color:#fecaca}"
+            )
+            doc_id = doc["doctor_id"]
+            remove_btn.clicked.connect(lambda checked, did=doc_id: self._on_remove_deal_doctor(did))
+            self._deal_table.setCellWidget(i, 3, remove_btn)
+        self._update_patient_price()
+
+    def _on_deal_pct_changed(self, idx, key, val):
+        if 0 <= idx < len(self._deal_doctors):
+            self._deal_doctors[idx][key] = str(val)
+            self._update_patient_price()
+
+    def _update_patient_price(self):
+        if not self._deal_enabled.isChecked() or not self._deal_doctors:
+            self._patient_price_lbl.setText("—")
+            return
+        base_price = to_decimal(self.sale_price_input.value())
+        max_deal = max(float(d.get("deal_pct", "0")) for d in self._deal_doctors)
+        max_disc = max(float(d.get("discount_pct", "0")) for d in self._deal_doctors)
+        patient_price = base_price * (Decimal("1") + to_decimal(str(max_deal)) / Decimal("100"))
+        patient_price = patient_price * (Decimal("1") - to_decimal(str(max_disc)) / Decimal("100"))
+        self._patient_price_lbl.setText(f"{format_currency(patient_price)} د.ع")
+
+    def _save_deal_rules(self, product_id):
+        if self._deal_enabled.isChecked() and self._deal_doctors:
+            rules = []
+            for d in self._deal_doctors:
+                dp = d["deal_pct"]
+                if dp and to_decimal(dp) > DECIMAL_ZERO:
+                    rules.append({
+                        "doctor_id": d["doctor_id"],
+                        "reward_value": dp,
+                        "deal_type": "deal",
+                    })
+                dip = d["discount_pct"]
+                if dip and to_decimal(dip) > DECIMAL_ZERO:
+                    rules.append({
+                        "doctor_id": d["doctor_id"],
+                        "reward_value": dip,
+                        "deal_type": "discount",
+                    })
+            self.doc_ctrl.set_product_rules(product_id, rules, "deal")
+        else:
+            self.db.execute(
+                "UPDATE doctor_reward_rules SET is_active = 0 WHERE product_id = ?",
+                (product_id,),
+            )
 
     # ── helpers ──────────────────────────────────────────────────
     @staticmethod
@@ -977,7 +1252,7 @@ class ProductDialog(QDialog):
 
             self._barcode_status_lbl.setText(f"⚠️ موجود ({stock_qty} وحدة)")
             self._barcode_status_lbl.setStyleSheet(
-                "font-size:13px;color:#f59e0b;background:transparent;padding:0 6px"
+                "font-size:13px;color:#0d9488;background:transparent;padding:0 6px"
             )
 
             # Ask the user
@@ -1003,6 +1278,27 @@ class ProductDialog(QDialog):
                 self.min_stock_input.setValue(int(existing.get("min_stock") or 10))
                 self.stock_input.setValue(0)   # user enters only the NEW batch quantity
                 self._update_auto_prices()
+                # Load deal rules
+                rules = self.doc_ctrl.get_rules_for_product(existing["id"])
+                if rules:
+                    self._deal_enabled.setChecked(True)
+                    doc_map = {}
+                    for r in rules:
+                        rd = dict(r)
+                        did = rd["doctor_id"]
+                        if did not in doc_map:
+                            doc_map[did] = {
+                                "doctor_id": did,
+                                "doctor_name": rd.get("doctor_name", ""),
+                                "deal_pct": "0",
+                                "discount_pct": "0",
+                            }
+                        if rd.get("deal_type") == "discount":
+                            doc_map[did]["discount_pct"] = rd["reward_value"]
+                        else:
+                            doc_map[did]["deal_pct"] = rd["reward_value"]
+                    self._deal_doctors = list(doc_map.values())
+                    self._refresh_deal_table()
                 # select category
                 cat_id = existing.get("category_id")
                 if cat_id:
@@ -1032,25 +1328,63 @@ class ProductDialog(QDialog):
         self.barcode_input.setText(product["barcode"] or "")
         self.name_input.setText(product["name"] or "")
         self.sci_name_input.setText(dict(product).get("scientific_name") or "")
-        if dict(product).get("category_id"):
-            idx = self.category_combo.findData(product["category_id"])
+        cat_id = dict(product).get("category_id")
+        if cat_id:
+            idx = self.category_combo.findData(int(cat_id))
             if idx >= 0:
                 self.category_combo.setCurrentIndex(idx)
-        if dict(product).get("supplier_id"):
-            idx = self.supplier_combo.findData(product["supplier_id"])
+        sup_id = dict(product).get("supplier_id")
+        if sup_id:
+            idx = self.supplier_combo.findData(int(sup_id))
             if idx >= 0:
                 self.supplier_combo.setCurrentIndex(idx)
         self.sale_price_input.setValue(float(product["sale_price"] or 0))
         self.purchase_price_input.setValue(float(product["purchase_price"] or 0))
         p = dict(product)
         self.qty_in_pack_input.setValue(int(p.get("strips_per_pack", 6)))
+        # Calculate actual profit% from stored values (don't use default 30%)
+        purchase_val = to_decimal(self.purchase_price_input.value())
+        qty_val = self.qty_in_pack_input.value() or 1
+        sell_val = to_decimal(product["sale_price"] or 0)
+        per_unit = purchase_val / qty_val if qty_val else DECIMAL_ZERO
+        if per_unit:
+            pct = (sell_val - per_unit) / per_unit * 100
+            self.profit_pct_input.setValue(float(pct))
         self.stock_input.setValue(product["stock_quantity"] or 0)
         self.min_stock_input.setValue(product["min_stock"] or 10)
         self._update_auto_prices()
+        # Restore exact stored sale price (avoids rounding from profit_pct precision)
+        self.sale_price_input.setValue(float(product["sale_price"] or 0))
         if dict(product).get("expiry_date"):
             self.expiry_input.setDate(
                 QDate.fromString(str(product["expiry_date"]), "yyyy-MM-dd")
             )
+        is_bc = dict(product).get("is_barcoded", 1)
+        if is_bc == 0:
+            self._non_bc_chk.setChecked(True)
+
+        # ── Load doctor deal rules ──
+        rules = self.doc_ctrl.get_rules_for_product(product["id"])
+        if rules:
+            self._deal_enabled.setChecked(True)
+            # Group rules by doctor
+            doc_map = {}
+            for r in rules:
+                rd = dict(r)
+                did = rd["doctor_id"]
+                if did not in doc_map:
+                    doc_map[did] = {
+                        "doctor_id": did,
+                        "doctor_name": rd.get("doctor_name", ""),
+                        "deal_pct": "0",
+                        "discount_pct": "0",
+                    }
+                if rd.get("deal_type") == "discount":
+                    doc_map[did]["discount_pct"] = rd["reward_value"]
+                else:
+                    doc_map[did]["deal_pct"] = rd["reward_value"]
+            self._deal_doctors = list(doc_map.values())
+            self._refresh_deal_table()
 
     def _generate_and_print_barcode(self):
         from PyQt5.QtWidgets import QInputDialog
@@ -1081,11 +1415,20 @@ class ProductDialog(QDialog):
                 QMessageBox.critical(self, "خطأ", msg)
 
     @safe_operation("عذراً، حدث خطأ أثناء حفظ المادة.")
+    def _on_non_bc_toggled(self, checked):
+        is_non = checked == Qt.Checked
+        self.barcode_input.setEnabled(not is_non)
+        self.print_bc_btn.setEnabled(not is_non)
+        if is_non:
+            import time
+            self.barcode_input.setText(f"NON-{int(time.time() * 1000)}")
+
     def _save(self):
         barcode = self.barcode_input.text().strip()
         name = self.name_input.text().strip()
+        is_non_bc = self._non_bc_chk.isChecked()
 
-        if not barcode:
+        if not is_non_bc and not barcode:
             QMessageBox.warning(self, "خطأ", "يرجى إدخال الباركود")
             return
         if not name:
@@ -1106,15 +1449,17 @@ class ProductDialog(QDialog):
                 # Also update purchase price / expiry if changed
                 self.product_ctrl.update(existing_id, {
                     "purchase_price": to_decimal(self.purchase_price_input.value()),
-                    "sale_price": to_decimal(self.sale_price_input.value()),
+                    "sale_price": round_to_nearest_250(to_decimal(self.sale_price_input.value())),
                     "strips_per_pack": self.qty_in_pack_input.value(),
                     "pieces_per_strip": 1,
                     "expiry_date": self.expiry_input.date().toString("yyyy-MM-dd"),
                     "min_stock": self.min_stock_input.value(),
+                    "is_barcoded": 0 if is_non_bc else 1,
                 })
+                self._save_deal_rules(existing_id)
                 # ── حذف تلقائي من الطلبية (في الخلفية) ──
                 try:
-                    OrderController().remove_by_name(existing.get("name", ""))
+                    OrderController().remove_by_name(self._existing_product.get("name", ""))
                 except Exception:
                     pass
                 self.accept()
@@ -1127,15 +1472,17 @@ class ProductDialog(QDialog):
                     "scientific_name": self.sci_name_input.text().strip() or None,
                     "category_id": self.category_combo.currentData(),
                     "supplier_id": self.supplier_combo.currentData(),
-                    "sale_price": to_decimal(self.sale_price_input.value()),
+                    "sale_price": round_to_nearest_250(to_decimal(self.sale_price_input.value())),
                     "purchase_price": to_decimal(self.purchase_price_input.value()),
                     "strips_per_pack": self.qty_in_pack_input.value(),
                     "pieces_per_strip": 1,
                     "stock_quantity": self.stock_input.value(),
                     "min_stock": self.min_stock_input.value(),
                     "expiry_date": self.expiry_input.date().toString("yyyy-MM-dd"),
+                    "is_barcoded": 0 if is_non_bc else 1,
                 }
                 self.product_ctrl.update(self.product["id"], data)
+                self._save_deal_rules(self.product["id"])
                 self.accept()
 
             else:
@@ -1146,15 +1493,17 @@ class ProductDialog(QDialog):
                     "scientific_name": self.sci_name_input.text().strip() or None,
                     "category_id": self.category_combo.currentData(),
                     "supplier_id": self.supplier_combo.currentData(),
-                    "sale_price": to_decimal(self.sale_price_input.value()),
+                    "sale_price": round_to_nearest_250(to_decimal(self.sale_price_input.value())),
                     "purchase_price": to_decimal(self.purchase_price_input.value()),
                     "strips_per_pack": self.qty_in_pack_input.value(),
                     "pieces_per_strip": 1,
                     "stock_quantity": self.stock_input.value(),
                     "min_stock": self.min_stock_input.value(),
                     "expiry_date": self.expiry_input.date().toString("yyyy-MM-dd"),
+                    "is_barcoded": 0 if is_non_bc else 1,
                 }
-                self.product_ctrl.create(data)
+                new_id = self.product_ctrl.create(data)
+                self._save_deal_rules(new_id)
                 # ── حذف تلقائي من الطلبية (في الخلفية) ──
                 try:
                     OrderController().remove_by_name(name)

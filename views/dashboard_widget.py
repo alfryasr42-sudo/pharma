@@ -198,7 +198,7 @@ class DashboardWidget(QWidget):
         # Low Stock Table
         low_lbl = QLabel("📦 المواد قريبة نفاذ الكمية")
         low_lbl.setStyleSheet(
-            "font-size: 16px; font-weight: bold; color: #fbbf24; "
+            "font-size: 16px; font-weight: bold; color: #14b8a6; "
             "padding: 8px 16px; background: rgba(251,191,36,15); "
             "border: 1px solid rgba(251,191,36,40); border-radius: 8px;"
         )
@@ -318,7 +318,7 @@ class DashboardWidget(QWidget):
         self._load_low_stock()
 
         layout.addSpacing(6)
-        st = QLabel("جميع الحقوق محفوظة © PharmaSys 2026")
+        st = QLabel("جميع الحقوق محفوظة © RTX 2026")
         st.setStyleSheet("font-size: 11px; color: rgba(255,255,255,50); background: transparent;")
         st.setAlignment(Qt.AlignCenter)
         layout.addWidget(st)
@@ -379,7 +379,7 @@ class DashboardWidget(QWidget):
             
             # Status (centered + colored)
             status = "قريبة الانتهاء"
-            status_color = "#fbbf24" # yellow
+            status_color = "#14b8a6" # yellow
             if exp_date:
                 try:
                     d = datetime.strptime(exp_date, "%Y-%m-%d").date()
@@ -429,7 +429,7 @@ class DashboardWidget(QWidget):
             
             # Status (centered + colored)
             status = "نفذت" if qty <= 0 else "منخفضة"
-            status_color = "#f87171" if qty <= 0 else "#fbbf24"
+            status_color = "#f87171" if qty <= 0 else "#14b8a6"
             
             s_item = QTableWidgetItem(status)
             s_item.setTextAlignment(Qt.AlignCenter)

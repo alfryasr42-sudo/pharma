@@ -11,7 +11,7 @@ from utils.modern_msgbox import ModernMessageBox as QMessageBox
 
 from controllers.doctor_controller import DoctorController
 from controllers.product_controller import ProductController
-from utils.decimal_handler import to_decimal, from_decimal, format_currency
+from utils.decimal_handler import to_decimal, from_decimal, format_currency, DECIMAL_ZERO
 
 # ── palette ────────────────────────────────────────────────────
 _BG      = "#0b1120"
@@ -65,19 +65,20 @@ _TAB_SS = (
 
 
 def _card_label(text, value, color=_GREEN, parent=None):
-    """Create a glass stat card."""
+    """Create a compact glass stat card."""
     frame = QFrame(parent)
+    frame.setFixedSize(200, 72)
     frame.setStyleSheet(
-        f"QFrame{{background:{_CARD};border-radius:10px;padding:0}}"
+        f"QFrame{{background:{_CARD};border-radius:8px;padding:0}}"
     )
     lay = QVBoxLayout(frame)
-    lay.setSpacing(8)
-    lay.setContentsMargins(20, 18, 20, 18)
+    lay.setSpacing(2)
+    lay.setContentsMargins(8, 6, 8, 6)
     lbl = QLabel(text)
-    lbl.setStyleSheet(f"font-size:17px;color:{_DIM};background:transparent")
+    lbl.setStyleSheet(f"font-size:13px;color:{_DIM};background:transparent")
     lbl.setAlignment(Qt.AlignCenter)
     val_lbl = QLabel(str(value))
-    val_lbl.setStyleSheet(f"font-size:26px;font-weight:800;color:{color};background:transparent")
+    val_lbl.setStyleSheet(f"font-size:20px;font-weight:800;color:{color};background:transparent")
     val_lbl.setAlignment(Qt.AlignCenter)
     lay.addWidget(lbl)
     lay.addWidget(val_lbl)
@@ -100,48 +101,76 @@ class DoctorsWidget(QWidget):
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
-        layout.setSpacing(16)
-        layout.setContentsMargins(26, 18, 26, 18)
-
-        # ── Header ──
-        header = QHBoxLayout()
-        title = QLabel("\u0625\u062f\u0627\u0631\u0629 \u0627\u0644\u0623\u0637\u0628\u0627\u0621 \u0648\u0627\u0644\u062f\u064a\u0644\u0627\u062a")
-        title.setStyleSheet(f"font-size:28px;font-weight:800;color:{_TEXT};background:transparent")
-        header.addWidget(title)
-        header.addStretch()
-
-        self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("\u0627\u0628\u062d\u062b \u0639\u0646 \u0637\u0628\u064a\u0628...")
-        self.search_input.setFixedWidth(240)
-        self.search_input.setFixedHeight(52)
-        self.search_input.setStyleSheet(_INPUT_SS)
-        self.search_input.textChanged.connect(self._on_search)
-        header.addWidget(self.search_input)
-
-        self.add_btn = QPushButton("+ \u0625\u0636\u0627\u0641\u0629 \u0637\u0628\u064a\u0628")
-        self.add_btn.setStyleSheet(_BTN_SS)
-        self.add_btn.setCursor(Qt.PointingHandCursor)
-        self.add_btn.setFixedHeight(52)
-        self.add_btn.clicked.connect(self._show_add_dialog)
-        header.addWidget(self.add_btn)
-
-        self.refresh_btn = QPushButton("\u27f3 \u062a\u062d\u062f\u064a\u062b")
-        self.refresh_btn.setStyleSheet(_BTN_BLUE_SS)
-        self.refresh_btn.setCursor(Qt.PointingHandCursor)
-        self.refresh_btn.setFixedHeight(52)
-        self.refresh_btn.clicked.connect(self._load_doctors)
-        header.addWidget(self.refresh_btn)
-
-        layout.addLayout(header)
+        layout.setSpacing(12)
+        layout.setContentsMargins(20, 14, 20, 14)
 
         # ── Tabs ──
         self.tabs = QTabWidget()
         self.tabs.setStyleSheet(_TAB_SS)
 
-        # Tab 1: Doctors
+        # ── Tab 1: Doctors (redesigned) ──
+        doctors_tab = QWidget()
+        doc_lay = QVBoxLayout(doctors_tab)
+        doc_lay.setSpacing(8)
+        doc_lay.setContentsMargins(0, 4, 0, 4)
+
+        # Top bar: [search + refresh] ... [count] ... [name input + add]
+        top_bar = QHBoxLayout()
+        top_bar.setSpacing(10)
+
+        # Left side (end in RTL) — search + refresh
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("🔍  ابحث عن طبيب...")
+        self.search_input.setFixedWidth(240)
+        self.search_input.setFixedHeight(44)
+        self.search_input.setStyleSheet(_INPUT_SS)
+        self.search_input.textChanged.connect(self._on_search)
+        top_bar.addWidget(self.search_input)
+
+        refresh_btn = QPushButton("↻")
+        refresh_btn.setFixedSize(44, 44)
+        refresh_btn.setCursor(Qt.PointingHandCursor)
+        refresh_btn.setStyleSheet(
+            f"QPushButton{{background:{_CARD};color:{_MUTED};border:2px solid {_BORDER};"
+            f"border-radius:8px;font-size:18px;font-weight:700}}"
+            f"QPushButton:hover{{border-color:{_BLUE2};color:{_TEXT}}}"
+        )
+        refresh_btn.clicked.connect(self._load_doctors)
+        top_bar.addWidget(refresh_btn)
+
+        top_bar.addStretch(2)
+
+        # Count badge
+        self._doctor_count_lbl = QLabel("عدد الأطباء: 0")
+        self._doctor_count_lbl.setStyleSheet(
+            f"font-size:15px;font-weight:700;color:{_DIM};background:{_CARD};"
+            f"border-radius:8px;padding:6px 16px;border:1px solid {_BORDER}"
+        )
+        top_bar.addWidget(self._doctor_count_lbl)
+
+        top_bar.addStretch(2)
+
+        # Right side (start in RTL) — name input + add
+        self._add_name_input = QLineEdit()
+        self._add_name_input.setPlaceholderText("👨‍⚕️  اسم الطبيب الجديد")
+        self._add_name_input.setFixedWidth(200)
+        self._add_name_input.setFixedHeight(44)
+        self._add_name_input.setStyleSheet(_INPUT_SS)
+        self._add_name_input.returnPressed.connect(self._show_add_dialog)
+        top_bar.addWidget(self._add_name_input)
+
+        add_btn = QPushButton("+ إضافة")
+        add_btn.setFixedHeight(44)
+        add_btn.setCursor(Qt.PointingHandCursor)
+        add_btn.setStyleSheet(_BTN_SS)
+        add_btn.clicked.connect(self._show_add_dialog)
+        top_bar.addWidget(add_btn)
+
+        doc_lay.addLayout(top_bar)
+
         self.doctor_table = QTableWidget()
-        self.doctor_table.setColumnCount(5)
-        self.doctor_table.setHorizontalHeaderLabels(["ID", "\u0627\u0644\u0627\u0633\u0645", "\u0627\u0644\u062a\u062e\u0635\u0635", "\u0646\u0633\u0628\u0629 \u0627\u0644\u0639\u0645\u0648\u0644\u0629", "\u0627\u0644\u0647\u0627\u062a\u0641"])
+        self.doctor_table.setColumnCount(6)
+        self.doctor_table.setHorizontalHeaderLabels(["ID", "الاسم", "التخصص", "نسبة العمولة", "الهاتف", ""])
         self.doctor_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self.doctor_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.doctor_table.setAlternatingRowColors(True)
@@ -149,7 +178,9 @@ class DoctorsWidget(QWidget):
         self.doctor_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.doctor_table.doubleClicked.connect(self._on_doctor_double_click)
         self.doctor_table.setStyleSheet(_TABLE_SS)
-        self.tabs.addTab(self.doctor_table, "\U0001f468\u200d\u2695\ufe0f \u0627\u0644\u0623\u0637\u0628\u0627\u0621")
+        doc_lay.addWidget(self.doctor_table, 1)
+
+        self.tabs.addTab(doctors_tab, "👨‍⚕️ الأطباء")
 
         # Tab 2: Rules
         rules_tab = QWidget()
@@ -178,27 +209,29 @@ class DoctorsWidget(QWidget):
 
         self.tabs.addTab(rules_tab, "\U0001f4cb \u0642\u0648\u0627\u0639\u062f \u0627\u0644\u062f\u064a\u0644\u0627\u062a")
 
-        # Tab 3: Earnings
+        # Tab 3: Earnings + Doctor Details (merged)
         earnings_tab = QWidget()
         earn_lay = QVBoxLayout(earnings_tab)
         earn_lay.setContentsMargins(0, 8, 0, 0)
         earn_lay.setSpacing(10)
 
-        # Summary cards row
+        # ── Summary cards ──
         cards_row = QHBoxLayout()
         cards_row.setSpacing(12)
-        f1, self._earn_total_lbl = _card_label("\u0625\u062c\u0645\u0627\u0644\u064a \u062d\u0635\u0635 \u0627\u0644\u0623\u0637\u0628\u0627\u0621", "0.00", _AMBER)
+        cards_row.addStretch(1)
+        f1, self._earn_total_lbl = _card_label("إجمالي حصص الأطباء", "0", _AMBER)
         cards_row.addWidget(f1)
-        f2, self._earn_deals_lbl = _card_label("\u0639\u062f\u062f \u0627\u0644\u062f\u064a\u0644\u0627\u062a", "0", _PURPLE)
+        f2, self._earn_deals_lbl = _card_label("عدد الديلات", "0", _PURPLE)
         cards_row.addWidget(f2)
-        f3, self._earn_doctors_lbl = _card_label("\u0623\u0637\u0628\u0627\u0621 \u0646\u0634\u0637\u0648\u0646", "0", _BLUE)
+        f3, self._earn_doctors_lbl = _card_label("أطباء نشطون", "0", _BLUE)
         cards_row.addWidget(f3)
+        cards_row.addStretch(1)
         earn_lay.addLayout(cards_row)
 
-        # Date filter
+        # ── Date filter ──
         filter_row = QHBoxLayout()
         filter_row.setSpacing(8)
-        filter_lbl = QLabel("\u0645\u0646:")
+        filter_lbl = QLabel("من:")
         filter_lbl.setStyleSheet(f"color:{_MUTED};font-size:16px;background:transparent")
         filter_row.addWidget(filter_lbl)
         self._earn_from = QDateEdit()
@@ -209,8 +242,7 @@ class DoctorsWidget(QWidget):
         self._earn_from.setLocale(QLocale(QLocale.English, QLocale.UnitedStates))
         self._earn_from.setStyleSheet(_INPUT_SS)
         filter_row.addWidget(self._earn_from)
-
-        filter_lbl2 = QLabel("\u0625\u0644\u0649:")
+        filter_lbl2 = QLabel("إلى:")
         filter_lbl2.setStyleSheet(f"color:{_MUTED};font-size:16px;background:transparent")
         filter_row.addWidget(filter_lbl2)
         self._earn_to = QDateEdit()
@@ -221,8 +253,7 @@ class DoctorsWidget(QWidget):
         self._earn_to.setLocale(QLocale(QLocale.English, QLocale.UnitedStates))
         self._earn_to.setStyleSheet(self._earn_from.styleSheet())
         filter_row.addWidget(self._earn_to)
-
-        filter_btn = QPushButton("\u0639\u0631\u0636")
+        filter_btn = QPushButton("عرض")
         filter_btn.setStyleSheet(_BTN_BLUE_SS)
         filter_btn.setCursor(Qt.PointingHandCursor)
         filter_btn.setFixedHeight(52)
@@ -231,39 +262,73 @@ class DoctorsWidget(QWidget):
         filter_row.addStretch()
         earn_lay.addLayout(filter_row)
 
-        # Summary per doctor
+        # ── Doctor summary table ──
         self.earn_summary_table = QTableWidget()
         self.earn_summary_table.setColumnCount(4)
-        self.earn_summary_table.setHorizontalHeaderLabels(["\u0627\u0644\u0637\u0628\u064a\u0628", "\u0639\u062f\u062f \u0627\u0644\u0641\u0648\u0627\u062a\u064a\u0631", "\u0625\u062c\u0645\u0627\u0644\u064a \u0627\u0644\u062d\u0635\u0629", ""])
+        self.earn_summary_table.setHorizontalHeaderLabels(["الطبيب", "عدد الفواتير", "إجمالي الحصة", ""])
         self.earn_summary_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self.earn_summary_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.earn_summary_table.verticalHeader().setVisible(False)
         self.earn_summary_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.earn_summary_table.setStyleSheet(_TABLE_SS)
-        self.earn_summary_table.setMaximumHeight(200)
+        self.earn_summary_table.setMaximumHeight(220)
         self.earn_summary_table.setColumnHidden(3, True)
-        self.earn_summary_table.doubleClicked.connect(self._on_earning_summary_click)
+        self.earn_summary_table.clicked.connect(self._on_earning_summary_click)
         earn_lay.addWidget(self.earn_summary_table)
 
-        # Detailed earnings
-        detail_lbl = QLabel("\u0627\u0644\u062a\u0641\u0627\u0635\u064a\u0644 (\u0627\u0646\u0642\u0631 \u0645\u0632\u062f\u0648\u062c \u0639\u0644\u0649 \u0637\u0628\u064a\u0628 \u0623\u0639\u0644\u0627\u0647)")
-        detail_lbl.setStyleSheet(f"font-size:15px;color:{_MUTED};background:transparent;padding:4px 0")
-        earn_lay.addWidget(detail_lbl)
+        # ── Separator ──
+        sep = QFrame()
+        sep.setFixedHeight(2)
+        sep.setStyleSheet(f"background:{_BORDER}")
+        earn_lay.addWidget(sep)
 
-        self.earn_detail_table = QTableWidget()
-        self.earn_detail_table.setColumnCount(6)
-        self.earn_detail_table.setHorizontalHeaderLabels([
-            "\u0631\u0642\u0645 \u0627\u0644\u0641\u0627\u062a\u0648\u0631\u0629", "\u0627\u0644\u0645\u0646\u062a\u062c", "\u0627\u0644\u0633\u0639\u0631 \u0627\u0644\u0623\u0635\u0644\u064a", "\u0633\u0639\u0631 \u0627\u0644\u062f\u064a\u0644", "\u062d\u0635\u0629 \u0627\u0644\u0637\u0628\u064a\u0628", "\u0627\u0644\u062a\u0627\u0631\u064a\u062e"
-        ])
-        self.earn_detail_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
-        self.earn_detail_table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.earn_detail_table.verticalHeader().setVisible(False)
-        self.earn_detail_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.earn_detail_table.setAlternatingRowColors(True)
-        self.earn_detail_table.setStyleSheet(_TABLE_SS)
-        earn_lay.addWidget(self.earn_detail_table)
+        # ── Doctor detail section (hidden initially) ──
+        self._detail_frame = QFrame()
+        self._detail_frame.setVisible(False)
+        df_lay = QVBoxLayout(self._detail_frame)
+        df_lay.setContentsMargins(0, 4, 0, 0)
+        df_lay.setSpacing(8)
 
-        self.tabs.addTab(earnings_tab, "\U0001f4b0 \u0627\u0644\u062d\u0635\u0635 \u0648\u0627\u0644\u0623\u0631\u0628\u0627\u062d")
+        self._detail_header = QLabel("")
+        self._detail_header.setStyleSheet(f"font-size:18px;font-weight:800;color:{_TEXT};background:transparent;padding:4px 0")
+        df_lay.addWidget(self._detail_header)
+
+        prod_lbl = QLabel("📦  المنتجات المرتبطة (ديل / تخفيض):")
+        prod_lbl.setStyleSheet(f"font-size:14px;font-weight:700;color:{_MUTED};background:transparent")
+        df_lay.addWidget(prod_lbl)
+
+        self._detail_products_table = QTableWidget()
+        self._detail_products_table.setColumnCount(3)
+        self._detail_products_table.setHorizontalHeaderLabels(["المنتج", "ديل %", "تخفيض %"])
+        self._detail_products_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self._detail_products_table.setAlternatingRowColors(True)
+        self._detail_products_table.verticalHeader().setVisible(False)
+        self._detail_products_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self._detail_products_table.setMaximumHeight(180)
+        self._detail_products_table.setStyleSheet(
+            f"QTableWidget{{background:{_CARD};border:none;border-radius:6px;color:{_TEXT};gridline-color:#1e2d45;font-size:14px}}"
+            f"QHeaderView::section{{background:#1e2d45;color:{_MUTED};padding:8px;border:none;font-size:13px;font-weight:700}}"
+            f"QTableWidget::item{{padding:6px;border-bottom:1px solid #1e2d4560;font-size:13px}}"
+            f"QTableWidget::item:alternate{{background:#0b112040}}"
+        )
+        df_lay.addWidget(self._detail_products_table)
+
+        earn_lbl = QLabel("💰  أرباح الطبيب:")
+        earn_lbl.setStyleSheet(f"font-size:14px;font-weight:700;color:{_MUTED};background:transparent")
+        df_lay.addWidget(earn_lbl)
+
+        self._detail_earn_table = QTableWidget()
+        self._detail_earn_table.setColumnCount(5)
+        self._detail_earn_table.setHorizontalHeaderLabels(["رقم الفاتورة", "المنتج", "السعر الأصلي", "السعر المعدل", "حصة الطبيب"])
+        self._detail_earn_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self._detail_earn_table.setAlternatingRowColors(True)
+        self._detail_earn_table.verticalHeader().setVisible(False)
+        self._detail_earn_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self._detail_earn_table.setStyleSheet(_TABLE_SS)
+        df_lay.addWidget(self._detail_earn_table, 1)
+
+        earn_lay.addWidget(self._detail_frame, 1)
+        self.tabs.addTab(earnings_tab, "💰  الحصص والأرباح")
 
         layout.addWidget(self.tabs, 1)
 
@@ -313,30 +378,71 @@ class DoctorsWidget(QWidget):
         if not id_item:
             return
         doctor_id = int(id_item.text())
+        doctor = self.doc_ctrl.get_by_id(doctor_id)
+        if not doctor:
+            return
+        # Show detail section
+        self._show_doctor_detail(doctor)
+
+    def _show_doctor_detail(self, doctor):
+        doc = dict(doctor)
+        self._detail_frame.setVisible(True)
         start = self._earn_from.date().toString("yyyy-MM-dd")
         end = self._earn_to.date().toString("yyyy-MM-dd")
+
+        # Header
+        self._detail_header.setText(f"👨‍⚕️  {doc['name']}  —  {doc.get('specialization') or '—'}  |  📞 {doc.get('phone') or '—'}")
+
+        # Products
+        products = self.doc_ctrl.get_doctor_products(doc["id"])
+        prod_map = {}
+        for r in products:
+            rd = dict(r)
+            pid = rd["product_id"]
+            if pid not in prod_map:
+                prod_map[pid] = {"name": rd["product_name"], "deal_pct": "0", "discount_pct": "0"}
+            if rd.get("deal_type") == "discount":
+                prod_map[pid]["discount_pct"] = rd["reward_value"]
+            else:
+                prod_map[pid]["deal_pct"] = rd["reward_value"]
+        self._detail_products_table.setRowCount(len(prod_map))
+        for i, (pid, info) in enumerate(prod_map.items()):
+            self._detail_products_table.setItem(i, 0, QTableWidgetItem(info["name"]))
+            deal = QTableWidgetItem(f"{format_currency(info['deal_pct'])} %")
+            deal.setForeground(QColor(_PURPLE))
+            deal.setFont(QFont("Segoe UI", 12, QFont.Bold))
+            self._detail_products_table.setItem(i, 1, deal)
+            disc = QTableWidgetItem(f"{format_currency(info['discount_pct'])} %")
+            disc.setForeground(QColor(_GREEN))
+            disc.setFont(QFont("Segoe UI", 12, QFont.Bold))
+            self._detail_products_table.setItem(i, 2, disc)
+
+        # Earnings
         try:
-            earnings = self.doc_ctrl.get_doctor_earnings(doctor_id, start, end)
-            self.earn_detail_table.setRowCount(len(earnings))
+            earnings = self.doc_ctrl.get_doctor_earnings(doc["id"], start, end)
+            self._detail_earn_table.setRowCount(len(earnings))
+            total_share = DECIMAL_ZERO
             for i, e in enumerate(earnings):
                 e = dict(e)
-                self.earn_detail_table.setItem(i, 0, QTableWidgetItem(str(e.get("invoice_number", ""))))
-                self.earn_detail_table.setItem(i, 1, QTableWidgetItem(e.get("product_name", "")))
-
+                self._detail_earn_table.setItem(i, 0, QTableWidgetItem(str(e.get("invoice_number", ""))))
+                self._detail_earn_table.setItem(i, 1, QTableWidgetItem(e.get("product_name", "")))
                 orig = QTableWidgetItem(format_currency(e.get("original_price", "0")))
                 orig.setForeground(QColor(_MUTED))
-                self.earn_detail_table.setItem(i, 2, orig)
-
+                self._detail_earn_table.setItem(i, 2, orig)
                 mod = QTableWidgetItem(format_currency(e.get("modified_price", "0")))
                 mod.setForeground(QColor(_BLUE))
-                self.earn_detail_table.setItem(i, 3, mod)
-
-                share = QTableWidgetItem(format_currency(e.get("doctor_share", "0")))
+                self._detail_earn_table.setItem(i, 3, mod)
+                share_val = e.get("doctor_share", "0")
+                share = QTableWidgetItem(format_currency(share_val))
                 share.setForeground(QColor(_AMBER))
                 share.setFont(QFont("Segoe UI", 13, QFont.Bold))
-                self.earn_detail_table.setItem(i, 4, share)
-
-                self.earn_detail_table.setItem(i, 5, QTableWidgetItem(str(e.get("created_at", ""))[:10]))
+                self._detail_earn_table.setItem(i, 4, share)
+                total_share += to_decimal(share_val)
+            # Append total to header
+            current = self._detail_header.text()
+            total_str = format_currency(total_share)
+            if "💰" not in current:
+                self._detail_header.setText(current + f"  |  💰 {total_str} د.ع")
         except Exception:
             pass
 
@@ -349,6 +455,7 @@ class DoctorsWidget(QWidget):
 
     def _populate_doctors(self, doctors):
         self.doctor_table.setRowCount(len(doctors))
+        self._doctor_count_lbl.setText(f"عدد الأطباء: {len(doctors)}")
         for i, d in enumerate(doctors):
             d_dict = dict(d)
             self.doctor_table.setItem(i, 0, QTableWidgetItem(str(d["id"])))
@@ -365,6 +472,18 @@ class DoctorsWidget(QWidget):
             self.doctor_table.setItem(i, 3, rate_item)
 
             self.doctor_table.setItem(i, 4, QTableWidgetItem(d_dict.get("phone") or ""))
+
+            detail_btn = QPushButton("🔍 تفاصيل")
+            detail_btn.setFixedSize(90, 32)
+            detail_btn.setCursor(Qt.PointingHandCursor)
+            detail_btn.setStyleSheet(
+                f"QPushButton{{background:{_BLUE2};color:white;border:none;"
+                f"border-radius:6px;font-size:12px;font-weight:700}}"
+                f"QPushButton:hover{{background:#3a7bd5}}"
+            )
+            doc_id = d["id"]
+            detail_btn.clicked.connect(lambda checked, did=doc_id: self._on_doctor_detail(did))
+            self.doctor_table.setCellWidget(i, 5, detail_btn)
             self.doctor_table.setRowHeight(i, 54)
 
     def _populate_rules(self, rules):
@@ -407,9 +526,20 @@ class DoctorsWidget(QWidget):
         if doctor:
             self._show_edit_dialog(doctor)
 
+    def _on_doctor_detail(self, doctor_id):
+        doctor = self.doc_ctrl.get_by_id(doctor_id)
+        if not doctor:
+            return
+        self._show_doctor_detail(doctor)
+        self.tabs.setCurrentIndex(2)
+
     def _show_add_dialog(self):
+        name = self._add_name_input.text().strip()
         dialog = DoctorDialog(self)
+        if name:
+            dialog.name_input.setText(name)
         if dialog.exec_() == QDialog.Accepted:
+            self._add_name_input.clear()
             self._load_doctors()
 
     def _show_edit_dialog(self, doctor):
@@ -619,7 +749,7 @@ class RuleDialog(QDialog):
 
         self.value_input = QDoubleSpinBox()
         self.value_input.setRange(0, 9999999)
-        self.value_input.setDecimals(2)
+        self.value_input.setDecimals(0)
         self.value_input.setFixedHeight(56)
         form.addRow("\U0001f4b0 \u0627\u0644\u0642\u064a\u0645\u0629:", self.value_input)
 

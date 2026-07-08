@@ -65,7 +65,7 @@ if idx1 != -1 and idx2 != -1:
                 
         if alerts:
             from utils.toast import ToastNotification
-            ToastNotification.show_message("\\n".join(alerts), 50000, self.window())
+            ToastNotification.show_message("\\n".join(alerts), 30000, self.window())
 
 '''
     inv = inv[:idx1] + new_alert + inv[idx2:]
@@ -84,7 +84,7 @@ setup_ui_old = '''        cl.addStretch()
         cc.setLayout(cl)
         layout.addWidget(cc)
         layout.addStretch()
-        st = QLabel("جميع الحقوق محفوظة © PharmaSys 2026")'''
+        st = QLabel("جميع الحقوق محفوظة © RTX 2026")'''
 
 setup_ui_new = '''        cl.addStretch()
         cc.setLayout(cl)
@@ -116,7 +116,7 @@ setup_ui_new = '''        cl.addStretch()
         self._load_expired()
         
         layout.addStretch()
-        st = QLabel("جميع الحقوق محفوظة © PharmaSys 2026")'''
+        st = QLabel("جميع الحقوق محفوظة © RTX 2026")'''
 
 if setup_ui_old in dash:
     dash = dash.replace(setup_ui_old, setup_ui_new)
@@ -152,7 +152,7 @@ if 'def _load_expired(self):' not in dash:
                 s_item.setForeground(QBrush(QColor("#f87171")))
             else:
                 from PyQt5.QtGui import QColor, QBrush
-                s_item.setForeground(QBrush(QColor("#fbbf24")))
+                s_item.setForeground(QBrush(QColor("#14b8a6")))
                 
             self.exp_table.setItem(r, 3, s_item)
 

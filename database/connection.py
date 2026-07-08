@@ -3,6 +3,7 @@ import os
 import threading
 import traceback
 from pathlib import Path
+from decimal import Decimal
 
 from utils.logger import log_error
 
@@ -18,6 +19,8 @@ class DatabaseManager:
             db_path = str(db_dir / "pharma.db")
         self.db_path = db_path
         self._local = threading.local()
+        # Register Decimal adapter globally so sqlite3 can accept Decimal params
+        sqlite3.register_adapter(Decimal, lambda d: str(d))
 
     def __new__(cls, *args, **kwargs):
         if not cls._instance:

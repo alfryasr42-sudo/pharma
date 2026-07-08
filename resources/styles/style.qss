@@ -1,4 +1,4 @@
-/* PharmaSys - Main Stylesheet */
+/* RTX - Main Stylesheet */
 
 QWidget {
     font-family: 'Segoe UI', 'Tahoma', 'Arial', sans-serif;

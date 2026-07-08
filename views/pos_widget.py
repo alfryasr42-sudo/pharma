@@ -1,13 +1,12 @@
 from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
+    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QLineEdit,
     QPushButton, QTableWidget, QTableWidgetItem, QHeaderView,
     QMessageBox, QComboBox, QDoubleSpinBox, QSpinBox,
     QAbstractItemView, QApplication, QFrame, QGraphicsDropShadowEffect,
-    QSizePolicy, QCompleter,
+    QSizePolicy, QCompleter, QDialog, QListWidget, QListWidgetItem,
+    QScrollArea,
 )
-from PyQt5.QtCore import (
-    Qt, QTimer, pyqtSignal, QEvent, QStringListModel, QLocale,
-)
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QEvent, QStringListModel, QLocale, QPropertyAnimation, QEasingCurve, QRect
 from PyQt5.QtGui import (
     QFont, QKeySequence, QColor, QPainter, QLinearGradient, QBrush,
 )
@@ -18,7 +17,9 @@ from controllers.product_controller import ProductController
 from controllers.sale_controller import SaleController
 from controllers.customer_controller import CustomerController
 from controllers.doctor_controller import DoctorController
-from utils.decimal_handler import to_decimal, from_decimal, format_currency, DECIMAL_ZERO
+from controllers.return_controller import ReturnController
+from decimal import Decimal
+from utils.decimal_handler import to_decimal, from_decimal, format_currency, DECIMAL_ZERO, round_up_to_250, round_down_to_250, round_to_nearest_250
 from utils.logger import safe_operation
 
 
@@ -131,6 +132,11 @@ class POSWidget(QWidget):
         self._print_after_save = False
         self._payment_method = "نقداً"
         self._barcode_timer = None
+        self._sp_cart_items = []
+        self._return_mode = False
+        self._return_sale_id = None
+        self._return_panel_visible = False
+        self.return_ctrl = ReturnController()
 
         self._setup_ui()
         self._load_doctors()
@@ -146,7 +152,7 @@ class POSWidget(QWidget):
         self.doctor_combo.clear()
         self.doctor_combo.addItem("— اختر طبيب —", 0)
         self._doctor_names = ["— اختر طبيب —"]
-        for d in self.doc_ctrl.get_all():
+        for d in self.doc_ctrl.get_doctors_with_rules():
             self.doctor_combo.addItem(d["name"], d["id"])
             self._doctor_names.append(d["name"])
         # Make combo editable + searchable
@@ -166,6 +172,16 @@ class POSWidget(QWidget):
         db = DatabaseManager()
         deal_cost_setting = db.fetchone("SELECT setting_value FROM settings WHERE setting_key = 'show_doctor_deal_cost'")
         self._show_deal_cost = True if (deal_cost_setting and deal_cost_setting["setting_value"] == '1') else False
+        # Auto-delete held invoices from previous days
+        db.execute("DELETE FROM held_invoices WHERE date(created_at) < date('now')")
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if getattr(self, '_search_panel', None) and self._search_panel_visible:
+            pw = self.width()
+            panel_w = int(pw * 0.7)
+            self._search_panel.setGeometry(pw - panel_w, 0, panel_w, self.height())
+            self._search_panel.raise_()
 
     # ─────────── paintEvent ───────────
     def paintEvent(self, event):
@@ -196,6 +212,30 @@ class POSWidget(QWidget):
         hdr1.addWidget(self._sum_count_lbl)
         c1.addLayout(hdr1)
 
+        # Return mode banner (hidden by default)
+        self._return_banner = QFrame()
+        self._return_banner.setFixedHeight(40)
+        self._return_banner.setStyleSheet(
+            "QFrame{background:#134e4a;border:1px solid #14b8a6;border-radius:6px;}"
+        )
+        rbl = QHBoxLayout(self._return_banner)
+        rbl.setContentsMargins(10, 0, 10, 0)
+        self._return_label = QLabel("🔄 إرجاع فاتورة")
+        self._return_label.setStyleSheet("font-size:14px;font-weight:700;color:#14b8a6;background:transparent;border:none;")
+        rbl.addWidget(self._return_label)
+        rbl.addStretch()
+        self._return_exit_btn = QPushButton("✕")
+        self._return_exit_btn.setFixedSize(30, 30)
+        self._return_exit_btn.setCursor(Qt.PointingHandCursor)
+        self._return_exit_btn.setStyleSheet(
+            "QPushButton{font-size:16px;font-weight:700;color:#14b8a6;background:#134e4a;border:none;border-radius:15px;}"
+            "QPushButton:hover{background:#115e59;color:white;}"
+        )
+        self._return_exit_btn.clicked.connect(self._exit_return_mode)
+        rbl.addWidget(self._return_exit_btn)
+        self._return_banner.setVisible(False)
+        c1.addWidget(self._return_banner)
+
         self.invoice_table = QTableWidget()
         self.invoice_table.setColumnCount(8)
         self.invoice_table.setHorizontalHeaderLabels(["المنتج", "الوحدة", "الكمية", "السعر", "الإجمالي", "🏷", "خصم%", ""])
@@ -221,7 +261,7 @@ class POSWidget(QWidget):
         sl.setContentsMargins(14, 8, 14, 8)
         sl.addStretch()
         sl.addWidget(_label("الإجمالي", "#94a3b8", 16))
-        self._sum_total_lbl = _label("0.00", "#10b981", 26, True)
+        self._sum_total_lbl = _label("0", "#10b981", 26, True)
         sl.addWidget(self._sum_total_lbl)
         c1.addWidget(sf)
 
@@ -347,21 +387,21 @@ class POSWidget(QWidget):
 
         # ── Unit Selector ──
         unit_row = QHBoxLayout()
-        unit_row.setSpacing(10)
+        unit_row.setSpacing(6)
         unit_row.setAlignment(Qt.AlignCenter)
-        unit_row.addWidget(_label("نوع البيع:", "#94a3b8", 15, True))
+        unit_row.addWidget(_label("نوع البيع:", "#94a3b8", 14, True))
         self._btn_pack = QPushButton("📦  علبة")
         self._btn_pack.setCheckable(True)
-        self._btn_pack.setFixedSize(120, 48)
+        self._btn_pack.setFixedSize(90, 44)
         self._btn_pack.setCursor(Qt.PointingHandCursor)
         self._btn_unit = QPushButton("💊  مفرد")
         self._btn_unit.setCheckable(True)
         self._btn_unit.setChecked(True)
-        self._btn_unit.setFixedSize(120, 48)
+        self._btn_unit.setFixedSize(90, 44)
         self._btn_unit.setCursor(Qt.PointingHandCursor)
         btn_style = (
             "QPushButton{background:#1e293b;color:#94a3b8;border:2px solid #334155;"
-            "border-radius:10px;font-size:16px;font-weight:700}"
+            "border-radius:10px;font-size:15px;font-weight:700}"
             "QPushButton:hover{background:#334155;color:#f1f5f9;border-color:#60a5fa}"
             "QPushButton:checked{background:#1e3a5f;color:#38bdf8;border-color:#38bdf8}"
         )
@@ -371,44 +411,91 @@ class POSWidget(QWidget):
         self._btn_unit.clicked.connect(lambda: self._set_sell_unit(True))
         unit_row.addWidget(self._btn_pack)
         unit_row.addWidget(self._btn_unit)
+
+        self._unit_qty_label = QLabel("1")
+        self._unit_qty_label.setFixedSize(60, 44)
+        self._unit_qty_label.setAlignment(Qt.AlignCenter)
+        self._unit_qty_label.setStyleSheet(
+            "QLabel{font-size:18px;font-weight:900;color:#38bdf8;"
+            "background:#0f172a;border:2px solid #38bdf8;border-radius:8px;}"
+        )
+        self._unit_qty_label.setVisible(True)
+        self._unit_qty_minus = QPushButton("−")
+        self._unit_qty_minus.setFixedSize(36, 44)
+        self._unit_qty_minus.setCursor(Qt.PointingHandCursor)
+        self._unit_qty_minus.setStyleSheet(
+            "QPushButton{font-size:20px;font-weight:900;color:#f1f5f9;"
+            "background:#1e293b;border:2px solid #38bdf8;border-radius:8px;}"
+            "QPushButton:hover{background:#334155;}"
+        )
+        self._unit_qty_minus.setVisible(True)
+        self._unit_qty_plus = QPushButton("+")
+        self._unit_qty_plus.setFixedSize(36, 44)
+        self._unit_qty_plus.setCursor(Qt.PointingHandCursor)
+        self._unit_qty_plus.setStyleSheet(
+            "QPushButton{font-size:20px;font-weight:900;color:#f1f5f9;"
+            "background:#1e293b;border:2px solid #38bdf8;border-radius:8px;}"
+            "QPushButton:hover{background:#334155;}"
+        )
+        self._unit_qty_plus.setVisible(True)
+        self._unit_qty_minus.clicked.connect(self._unit_qty_dec)
+        self._unit_qty_plus.clicked.connect(self._unit_qty_inc)
+        unit_row.addWidget(self._unit_qty_minus)
+        unit_row.addWidget(self._unit_qty_label)
+        unit_row.addWidget(self._unit_qty_plus)
+        self._manual_search_btn = QPushButton("🔍 بحث يدوي")
+        self._manual_search_btn.setFixedHeight(48)
+        self._manual_search_btn.setCursor(Qt.PointingHandCursor)
+        self._manual_search_btn.setStyleSheet(
+            "QPushButton{font-size:14px;font-weight:800;padding:0 18px;"
+            "background:#7c3aed;color:white;border:2px solid #a855f7;border-radius:10px;}"
+            "QPushButton:hover{background:#6d28d9;border-color:#c084fc;}"
+        )
+        self._manual_search_btn.clicked.connect(self._open_manual_search)
+        unit_row.addWidget(self._manual_search_btn)
+
+        # Hold button (next to search)
+        self.hold_btn = QPushButton("⏸ تعليق")
+        self.hold_btn.setFixedHeight(48)
+        self.hold_btn.setCursor(Qt.PointingHandCursor)
+        self.hold_btn.setStyleSheet(
+            "QPushButton{font-size:14px;font-weight:800;padding:0 14px;"
+            "background:#0d9488;color:white;border:2px solid #14b8a6;border-radius:10px;margin:0 4px;}"
+            "QPushButton:hover{background:#0f766e;border-color:#0d9488;}"
+        )
+        self.hold_btn.setToolTip("تعليق الفاتورة لحين عودة الزبون")
+        self.hold_btn.clicked.connect(self._hold_invoice)
+        unit_row.addWidget(self.hold_btn)
+
+        self.held_btn = QPushButton("📋")
+        self.held_btn.setFixedHeight(48)
+        self.held_btn.setCursor(Qt.PointingHandCursor)
+        self.held_btn.setStyleSheet(
+            "QPushButton{font-size:16px;font-weight:800;padding:0 12px;"
+            "background:#0d9488;color:white;border:2px solid #14b8a6;border-radius:10px;}"
+            "QPushButton:hover{background:#0f766e;border-color:#0d9488;}"
+        )
+        self.held_btn.setToolTip("الفواتير المعلقة")
+        self.held_btn.clicked.connect(self._show_held_invoices)
+        unit_row.addWidget(self.held_btn)
+
         unit_row.addStretch()
         l_main.addLayout(unit_row)
 
         # ── Deal/Discount Info Frame ──
         self._deal_frame = QFrame()
-        self._deal_frame.setStyleSheet(
-            "QFrame{background:#1a1a2e;border:1.5px solid #7c3aed50;border-radius:10px;padding:6px}"
-        )
         self._deal_frame.setVisible(False)
         dl = QVBoxLayout(self._deal_frame)
-        dl.setContentsMargins(10, 6, 10, 6)
-        dl.setSpacing(3)
+        dl.setContentsMargins(10, 4, 10, 4)
+        dl.setSpacing(2)
 
         self._deal_title_lbl = _label("", "#a78bfa", 14, True)
         self._deal_title_lbl.setAlignment(Qt.AlignCenter)
         dl.addWidget(self._deal_title_lbl)
 
-        deal_prices_row = QHBoxLayout()
-        deal_prices_row.setSpacing(12)
-        deal_prices_row.setAlignment(Qt.AlignCenter)
-
-        self._deal_orig_lbl = _label("", "#94a3b8", 14)
-        self._deal_orig_lbl.setAlignment(Qt.AlignCenter)
-        deal_prices_row.addWidget(self._deal_orig_lbl)
-
-        self._deal_arrow_lbl = _label("←", "#64748b", 16, True)
-        self._deal_arrow_lbl.setAlignment(Qt.AlignCenter)
-        deal_prices_row.addWidget(self._deal_arrow_lbl)
-
-        self._deal_new_lbl = _label("", "#f1f5f9", 16, True)
+        self._deal_new_lbl = _label("", "#f1f5f9", 18, True)
         self._deal_new_lbl.setAlignment(Qt.AlignCenter)
-        deal_prices_row.addWidget(self._deal_new_lbl)
-
-        dl.addLayout(deal_prices_row)
-
-        self._deal_cost_lbl = _label("", "#fbbf24", 14, True)
-        self._deal_cost_lbl.setAlignment(Qt.AlignCenter)
-        dl.addWidget(self._deal_cost_lbl)
+        dl.addWidget(self._deal_new_lbl)
 
         l_main.addWidget(self._deal_frame)
 
@@ -428,7 +515,7 @@ class POSWidget(QWidget):
         l_main.addWidget(_label("المالية", "#cbd5e1", 15, True))
 
         def _display_box(color="#f1f5f9", border_color="#334155", bg="#0f172a", size=19):
-            lbl = QLabel("0.00")
+            lbl = QLabel("0")
             lbl.setAlignment(Qt.AlignCenter)
             lbl.setStyleSheet(
                 f"QLabel{{"
@@ -442,7 +529,7 @@ class POSWidget(QWidget):
         def _editable_box(color="#f1f5f9", border_color="#334155", bg="#0f172a", size=19):
             box = QDoubleSpinBox()
             box.setRange(0, 9999999)
-            box.setDecimals(2)
+            box.setDecimals(0)
             box.setAlignment(Qt.AlignCenter)
             box.setButtonSymbols(QDoubleSpinBox.NoButtons)
             box.setLocale(QLocale(QLocale.English, QLocale.UnitedStates))
@@ -519,7 +606,7 @@ class POSWidget(QWidget):
         # 3. المدفوع (auto-fill = net total, read-only)
         self.paid_input = QDoubleSpinBox()
         self.paid_input.setRange(0, 9999999)
-        self.paid_input.setDecimals(2)
+        self.paid_input.setDecimals(0)
         self.paid_input.setReadOnly(True)
         self.paid_input.setButtonSymbols(QDoubleSpinBox.NoButtons)
         self.paid_input.setLocale(QLocale(QLocale.English, QLocale.UnitedStates))
@@ -547,7 +634,7 @@ class POSWidget(QWidget):
 
         # Return Arrow Button (Clear)
         self.clear_btn = QPushButton("↩")
-        self.clear_btn.setStyleSheet(_btn_style("#d97706", "white", 19, 44))
+        self.clear_btn.setStyleSheet(_btn_style("#0d9488", "white", 19, 44))
         self.clear_btn.setToolTip("تفريغ (F6)")
         self.clear_btn.setCursor(Qt.PointingHandCursor)
         self.clear_btn.clicked.connect(self._clear_invoice)
@@ -562,6 +649,14 @@ class POSWidget(QWidget):
         btn_layout.addWidget(self.save_print_btn)
         btn_layout.addWidget(self.clear_btn)
         btn_layout.addWidget(self.save_btn)
+
+        # Return button
+        self.return_btn = QPushButton("🔄 إرجاع")
+        self.return_btn.setStyleSheet(_btn_style("#0d9488", "white", 14, 44))
+        self.return_btn.setToolTip("إرجاع فاتورة")
+        self.return_btn.setCursor(Qt.PointingHandCursor)
+        self.return_btn.clicked.connect(self._toggle_return_panel)
+        btn_layout.addWidget(self.return_btn)
         left_col.addLayout(btn_layout)
 
         # Assemble columns inside card
@@ -593,6 +688,293 @@ class POSWidget(QWidget):
         root.addWidget(w1, 55)
         root.addWidget(w2, 45)
 
+        # ═══════════ Column 3: Search Panel (glass slide overlay, NOT in layout) ═══════════
+        self._search_panel = QFrame(self)
+        self._search_panel.setGeometry(0, 0, 0, 0)
+        self._search_panel.setStyleSheet("""
+            QFrame{
+                background:qlineargradient(x1:0,y1:0,x2:1,y2:1,
+                    stop:0 rgba(88,28,135,240), stop:0.5 rgba(76,29,149,235),
+                    stop:1 rgba(107,33,168,230));
+                border-left:3px solid #a855f7;
+            }
+        """)
+        sp_lay = QVBoxLayout(self._search_panel)
+        sp_lay.setContentsMargins(0, 0, 0, 0)
+        sp_lay.setSpacing(0)
+
+        # Header
+        sp_hdr = QFrame()
+        sp_hdr.setFixedHeight(64)
+        sp_hdr.setStyleSheet("""
+            QFrame{
+                background:qlineargradient(x1:0,y1:0,x2:1,y2:0,
+                    stop:0 rgba(126,34,206,200), stop:1 rgba(147,51,234,180));
+                border-bottom:2px solid #a855f7;
+            }
+        """)
+        sp_hdr_lay = QHBoxLayout(sp_hdr)
+        sp_hdr_lay.setContentsMargins(18, 10, 18, 10)
+        sp_title = QLabel("🔮 بحث المواد غير المكودة")
+        sp_title.setStyleSheet("font-size:22px;font-weight:900;color:#f1f5f9;background:transparent;border:none;letter-spacing:1px;")
+        sp_hdr_lay.addWidget(sp_title)
+        sp_hdr_lay.addStretch()
+        self._sp_close = QPushButton("✕")
+        self._sp_close.setFixedSize(44, 44)
+        self._sp_close.setCursor(Qt.PointingHandCursor)
+        self._sp_close.setStyleSheet("""
+            QPushButton{
+                background:qlineargradient(x1:0,y1:0,x2:1,y2:1,
+                    stop:0 #dc2626, stop:1 #b91c1c);
+                color:white;border:none;border-radius:12px;
+                font-size:22px;font-weight:900;
+            }
+            QPushButton:hover{
+                background:qlineargradient(x1:0,y1:0,x2:1,y2:1,
+                    stop:0 #ef4444, stop:1 #dc2626);
+            }
+        """)
+        self._sp_close.clicked.connect(self._toggle_search_panel)
+        sp_hdr_lay.addWidget(self._sp_close)
+        sp_lay.addWidget(sp_hdr)
+
+        # Search input
+        search_frame = QFrame()
+        search_frame.setStyleSheet("QFrame{background:transparent;margin:0 14px;}")
+        sf_lay = QVBoxLayout(search_frame)
+        sf_lay.setContentsMargins(0, 10, 0, 4)
+        sf_lay.setSpacing(0)
+        self._sp_search = QLineEdit()
+        self._sp_search.setPlaceholderText("🔍 اكتب اسم المادة للبحث...")
+        self._sp_search.setStyleSheet("""
+            QLineEdit{
+                font-size:20px;padding:14px 18px;
+                background:rgba(30,27,75,230);
+                border:2px solid #7c3aed;
+                border-radius:14px;
+                color:#f1f5f9;
+            }
+            QLineEdit:focus{
+                border-color:#a855f7;
+                background:rgba(30,27,75,250);
+            }
+        """)
+        self._sp_search.setFixedHeight(58)
+        self._sp_search.textChanged.connect(self._sp_filter_cards)
+        sf_lay.addWidget(self._sp_search)
+        sp_lay.addWidget(search_frame)
+
+        # Cart header
+        sp_cart_hdr = QHBoxLayout()
+        sp_cart_hdr.setContentsMargins(18, 4, 18, 4)
+        self._sp_cart_title = QLabel("🛒 السلة (0)")
+        self._sp_cart_title.setStyleSheet("font-size:17px;font-weight:800;color:#c084fc;background:transparent;border:none;")
+        sp_cart_hdr.addWidget(self._sp_cart_title)
+        sp_cart_hdr.addStretch()
+        sp_clear = QPushButton("🗑️ تفريغ")
+        sp_clear.setFixedSize(100, 36)
+        sp_clear.setCursor(Qt.PointingHandCursor)
+        sp_clear.setStyleSheet("""
+            QPushButton{
+                font-size:13px;font-weight:800;
+                background:qlineargradient(x1:0,y1:0,x2:1,y2:0,
+                    stop:0 #0d9488, stop:1 #0f766e);
+                color:white;border:none;border-radius:9px;
+            }
+            QPushButton:hover{
+                background:qlineargradient(x1:0,y1:0,x2:1,y2:0,
+                    stop:0 #0d9488, stop:1 #0d9488);
+            }
+        """)
+        sp_clear.clicked.connect(self._sp_clear_cart)
+        sp_cart_hdr.addWidget(sp_clear)
+        sp_lay.addLayout(sp_cart_hdr)
+
+        self._sp_cart = QListWidget()
+        self._sp_cart.setMinimumHeight(90)
+        self._sp_cart.setMaximumHeight(140)
+        self._sp_cart.setStyleSheet("""
+            QListWidget{
+                background:rgba(30,27,75,220);
+                border:2px solid #6d28d9;
+                border-radius:10px;
+                color:#f1f5f9;
+                font-size:14px;
+                margin:0 18px;
+                padding:4px;
+            }
+            QListWidget::item{
+                padding:8px 14px;
+                border-bottom:1px solid rgba(107,33,168,150);
+                border-radius:6px;
+            }
+            QListWidget::item:hover{
+                background:rgba(124,58,237,100);
+            }
+        """)
+        sp_lay.addWidget(self._sp_cart)
+
+        # Scrollable cards
+        sp_scroll = QScrollArea()
+        sp_scroll.setWidgetResizable(True)
+        sp_scroll.viewport().setStyleSheet("background:transparent;")
+        sp_scroll.setStyleSheet("""
+            QScrollArea{background:transparent;border:none;}
+            QScrollBar:vertical{width:6px;background:transparent;}
+            QScrollBar::handle:vertical{background:#6d28d9;border-radius:3px;}
+            QScrollBar::handle:vertical:hover{background:#a855f7;}
+            QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;}
+        """)
+        self._sp_cards_widget = QWidget()
+        self._sp_cards_widget.setStyleSheet("background:transparent;")
+        self._sp_cards_widget.setMinimumHeight(200)
+        self._sp_cards_layout = QGridLayout(self._sp_cards_widget)
+        self._sp_cards_layout.setSpacing(6)
+        self._sp_cards_layout.setContentsMargins(14, 6, 14, 6)
+        sp_scroll.setWidget(self._sp_cards_widget)
+        sp_lay.addWidget(sp_scroll, 1)
+
+        # Status bar
+        sp_status = QFrame()
+        sp_status.setFixedHeight(36)
+        sp_status.setStyleSheet("QFrame{background:rgba(88,28,135,180);border-top:1px solid #6d28d9;}")
+        st_lay = QHBoxLayout(sp_status)
+        st_lay.setContentsMargins(18, 0, 18, 0)
+        self._sp_count_lbl = QLabel("0 مادة")
+        self._sp_count_lbl.setStyleSheet("font-size:13px;font-weight:600;color:#c084fc;background:transparent;border:none;")
+        st_lay.addWidget(self._sp_count_lbl)
+        st_lay.addStretch()
+        sp_lay.addWidget(sp_status)
+
+        # Bottom buttons
+        sp_btns = QHBoxLayout()
+        sp_btns.setContentsMargins(18, 10, 18, 16)
+        sp_confirm = QPushButton("✅ إرسال للسلة")
+        sp_confirm.setFixedHeight(52)
+        sp_confirm.setCursor(Qt.PointingHandCursor)
+        sp_confirm.setStyleSheet("""
+            QPushButton{
+                font-size:17px;font-weight:900;
+                background:qlineargradient(x1:0,y1:0,x2:1,y2:0,
+                    stop:0 #7c3aed, stop:1 #6d28d9);
+                color:white;border:2px solid #a855f7;border-radius:12px;
+            }
+            QPushButton:hover{
+                background:qlineargradient(x1:0,y1:0,x2:1,y2:0,
+                    stop:0 #8b5cf6, stop:1 #7c3aed);
+                border-color:#c084fc;
+            }
+        """)
+        sp_confirm.clicked.connect(self._sp_confirm)
+        sp_btns.addWidget(sp_confirm)
+        sp_cancel = QPushButton("✖️ إلغاء")
+        sp_cancel.setFixedHeight(52)
+        sp_cancel.setCursor(Qt.PointingHandCursor)
+        sp_cancel.setStyleSheet("""
+            QPushButton{
+                font-size:17px;font-weight:900;
+                background:qlineargradient(x1:0,y1:0,x2:1,y2:0,
+                    stop:0 #4b5563, stop:1 #374151);
+                color:white;border:2px solid #6b7280;border-radius:12px;
+            }
+            QPushButton:hover{
+                background:qlineargradient(x1:0,y1:0,x2:1,y2:0,
+                    stop:0 #6b7280, stop:1 #4b5563);
+                border-color:#9ca3af;
+            }
+        """)
+        sp_cancel.clicked.connect(self._toggle_search_panel)
+        sp_btns.addWidget(sp_cancel)
+        sp_lay.addLayout(sp_btns)
+
+        # NOTE: _search_panel is an overlay child (no layout), positioned via _toggle_search_panel
+        self._search_panel.raise_()
+        self._search_panel_visible = False
+
+        # ═══════════ Return Panel (overlay, shows today's invoices) ═══════════
+        self._return_panel = QFrame(self)
+        self._return_panel.setGeometry(0, 0, 0, 0)
+        self._return_panel.setStyleSheet("""
+            QFrame{
+                background:qlineargradient(x1:0,y1:0,x2:1,y2:1,
+                    stop:0 rgba(19,78,74,240), stop:0.5 rgba(15,118,110,235),
+                    stop:1 rgba(13,148,136,230));
+                border-left:3px solid #14b8a6;
+            }
+        """)
+        rp_lay = QVBoxLayout(self._return_panel)
+        rp_lay.setContentsMargins(0, 0, 0, 0)
+        rp_lay.setSpacing(0)
+
+        # Header
+        rp_hdr = QFrame()
+        rp_hdr.setFixedHeight(64)
+        rp_hdr.setStyleSheet("""
+            QFrame{
+                background:qlineargradient(x1:0,y1:0,x2:1,y2:0,
+                    stop:0 rgba(13,148,136,200), stop:1 rgba(15,118,110,180));
+                border-bottom:2px solid #14b8a6;
+            }
+        """)
+        rp_hdr_lay = QHBoxLayout(rp_hdr)
+        rp_hdr_lay.setContentsMargins(18, 10, 18, 10)
+        rp_title = QLabel("🔄 إرجاع فاتورة - فواتير اليوم")
+        rp_title.setStyleSheet("font-size:22px;font-weight:900;color:#f1f5f9;background:transparent;border:none;")
+        rp_hdr_lay.addWidget(rp_title)
+        rp_hdr_lay.addStretch()
+        self._rp_close = QPushButton("✕")
+        self._rp_close.setFixedSize(44, 44)
+        self._rp_close.setCursor(Qt.PointingHandCursor)
+        self._rp_close.setStyleSheet(
+            "QPushButton{font-size:20px;font-weight:700;color:#14b8a6;background:#134e4a;border:none;border-radius:22px;}"
+            "QPushButton:hover{background:#115e59;color:white;}"
+        )
+        self._rp_close.clicked.connect(self._toggle_return_panel)
+        rp_hdr_lay.addWidget(self._rp_close)
+        rp_lay.addWidget(rp_hdr)
+
+        # Search input
+        self._rp_search = QLineEdit()
+        self._rp_search.setPlaceholderText("🔍 ابحث عن فاتورة...")
+        self._rp_search.setFixedHeight(48)
+        self._rp_search.setStyleSheet("""
+            QLineEdit{font-size:18px;font-weight:600;padding:8px 16px;
+                background:rgba(255,255,255,0.1);color:#f1f5f9;border:2px solid #14b8a660;
+                border-radius:10px;margin:10px 14px;}
+            QLineEdit:focus{border-color:#14b8a6;}
+        """)
+        self._rp_search.textChanged.connect(self._rp_filter_invoices)
+        rp_lay.addWidget(self._rp_search)
+
+        # Scroll area for invoice cards
+        self._rp_scroll = QScrollArea()
+        self._rp_scroll.setWidgetResizable(True)
+        self._rp_scroll.setStyleSheet("QScrollArea{background:transparent;border:none;}")
+        self._rp_container = QWidget()
+        self._rp_container.setStyleSheet("background:transparent;")
+        self._rp_grid = QVBoxLayout(self._rp_container)
+        self._rp_grid.setContentsMargins(14, 10, 14, 10)
+        self._rp_grid.setSpacing(8)
+        self._rp_scroll.setWidget(self._rp_container)
+        rp_lay.addWidget(self._rp_scroll)
+
+        # Admin delete invoice button
+        if self.user_data.get("role") == "admin":
+            self._rp_delete_btn = QPushButton("🗑️ حذف فاتورة (مدير فقط)")
+            self._rp_delete_btn.setFixedHeight(48)
+            self._rp_delete_btn.setCursor(Qt.PointingHandCursor)
+            self._rp_delete_btn.setStyleSheet("""
+                QPushButton{font-size:16px;font-weight:700;
+                    background:#134e4a;color:#14b8a6;border:2px solid #14b8a660;
+                    border-radius:10px;margin:6px 14px;}
+                QPushButton:hover{background:#115e59;color:white;}
+            """)
+            self._rp_delete_btn.clicked.connect(self._admin_delete_invoice)
+            rp_lay.addWidget(self._rp_delete_btn)
+
+        self._return_panel.raise_()
+        self._return_panel_visible = False
+
     # ──────────────────────────────────────────
     # Payment method
     # ──────────────────────────────────────────
@@ -621,18 +1003,16 @@ class POSWidget(QWidget):
     def _idle_focus_check(self):
         """يعيد التركيز لحقل الباركود إذا لم يكن المستخدم يُحرّر حقلاً آخر"""
         focused = QApplication.focusWidget()
-        # إذا لم يكن التركيز على أي حقل إدخال، أو كان على عنصر غير تفاعلي
-        editable_types = (QLineEdit, QDoubleSpinBox, QSpinBox, QComboBox)
+        editable_types = (QLineEdit, QDoubleSpinBox, QSpinBox, QComboBox, QListWidget, QAbstractItemView)
         if focused is None or not isinstance(focused, editable_types):
             self._focus_barcode()
         elif focused is self.barcode_input:
             pass  # already on barcode
 
     def mousePressEvent(self, event):
-        """عند النقر على منطقة فارغة يعود التركيز للباركود"""
         focused = QApplication.focusWidget()
-        if focused and focused is not self.barcode_input:
-            # تأخير صغير لإتاحة معالجة حدث النقر أولاً
+        editable_types = (QLineEdit, QDoubleSpinBox, QSpinBox, QComboBox, QListWidget, QAbstractItemView)
+        if focused and focused is not self.barcode_input and not isinstance(focused, editable_types):
             QTimer.singleShot(50, self._focus_barcode)
         super().mousePressEvent(event)
 
@@ -663,7 +1043,7 @@ class POSWidget(QWidget):
             if stk <= 0:
                 stk_item.setForeground(QColor("#ef4444"))
             elif stk <= 5:
-                stk_item.setForeground(QColor("#f59e0b"))
+                stk_item.setForeground(QColor("#0d9488"))
             self.search_results.setItem(i, 3, stk_item)
         self.search_results.setVisible(True)
 
@@ -679,18 +1059,273 @@ class POSWidget(QWidget):
     def _set_sell_unit(self, is_unit):
         self._btn_unit.setChecked(is_unit)
         self._btn_pack.setChecked(not is_unit)
+        old_is_pack = self._is_pack
         self._is_pack = not is_unit
+        self._unit_qty_label.setVisible(is_unit)
+        self._unit_qty_minus.setVisible(is_unit)
+        self._unit_qty_plus.setVisible(is_unit)
+        if old_is_pack != self._is_pack and self.current_items:
+            self._convert_items_unit(old_is_pack)
+        if is_unit and self._last_scanned_product:
+            self._unit_qty_label.setText("1")
         if self._last_scanned_product:
             self._show_product_price(self._last_scanned_product)
 
+    def _convert_items_unit(self, was_pack):
+        now_pack = self._is_pack
+        for item in self.current_items:
+            pid = item["product_id"]
+            prod = self.product_ctrl.search_by_barcode(item["barcode"])
+            if not prod:
+                continue
+            strip_price = to_decimal(prod["sale_price"])
+            pstrips = int(dict(prod).get("strips_per_pack", 1))
+            ppieces = int(dict(prod).get("pieces_per_strip", 1))
+            if was_pack and not now_pack:
+                item["sell_unit"] = "مفرد"
+                item["unit_price"] = strip_price
+                item["quantity"] = item["quantity"] * ppieces
+            elif not was_pack and now_pack:
+                item["sell_unit"] = "علبة"
+                item["unit_price"] = strip_price * pstrips
+                item["quantity"] = max(1, item["quantity"] // ppieces)
+            item["total_price"] = item["quantity"] * item["unit_price"]
+        self._refresh_invoice_table()
+        self._update_totals()
+
+    def _unit_qty_dec(self):
+        val = int(self._unit_qty_label.text() or "1")
+        if val > 1:
+            self._unit_qty_label.setText(str(val - 1))
+            if self._last_scanned_product:
+                self._show_product_price(self._last_scanned_product)
+            self._update_last_item_qty()
+
+    def _unit_qty_inc(self):
+        val = int(self._unit_qty_label.text() or "1")
+        if val < 999:
+            self._unit_qty_label.setText(str(val + 1))
+            if self._last_scanned_product:
+                self._show_product_price(self._last_scanned_product)
+            self._update_last_item_qty()
+
+    def _update_last_item_qty(self):
+        if not self.current_items or self._is_pack:
+            return
+        item = self.current_items[-1]
+        new_qty = int(self._unit_qty_label.text() or "1")
+        item["quantity"] = new_qty
+        item["total_price"] = item["quantity"] * item["unit_price"]
+        self._refresh_invoice_table()
+        self._update_totals()
+
+    def _open_manual_search(self):
+        try:
+            self._sp_cart_items = []
+            self._sp_refresh_cart()
+            rows = self.product_ctrl.db.fetchall("SELECT * FROM products WHERE is_active = 1 AND is_barcoded = 0 ORDER BY name")
+            self._sp_all_products = [dict(r) for r in rows]
+            self._toggle_search_panel(on_open=self._sp_populate_cards)
+        except Exception as e:
+            QMessageBox.warning(self, "خطأ", f"فشل تحميل المواد:\n{str(e)}")
+
+    def _sp_populate_cards(self):
+        try:
+            try:
+                self._sp_anim.finished.disconnect(self._sp_populate_cards)
+            except TypeError:
+                pass
+            self._sp_filter_cards()
+        except Exception:
+            pass
+
+    def _toggle_search_panel(self, on_open=None):
+        self._search_panel_visible = not self._search_panel_visible
+        pw = self.width()
+        ph = self.height()
+        if pw < 100:
+            pw = 1200
+            ph = 800
+        if not self._search_panel_visible:
+            start = self._search_panel.geometry()
+            end = QRect(pw, 0, 0, ph)
+            self._manual_search_btn.setStyleSheet(
+                "QPushButton{font-size:14px;font-weight:800;padding:0 18px;"
+                "background:#7c3aed;color:white;border:2px solid #a855f7;border-radius:10px;}"
+                "QPushButton:hover{background:#6d28d9;border-color:#c084fc;}"
+            )
+        else:
+            panel_w = int(pw * 0.7)
+            start = self._search_panel.geometry()
+            if start.width() == 0:
+                start = QRect(pw, 0, 0, ph)
+            end = QRect(pw - panel_w, 0, panel_w, ph)
+            self._manual_search_btn.setStyleSheet(
+                "QPushButton{font-size:14px;font-weight:800;padding:0 18px;"
+                "background:#dc2626;color:white;border:2px solid #ef4444;border-radius:10px;}"
+                "QPushButton:hover{background:#b91c1c;border-color:#fca5a5;}"
+            )
+            self._sp_search.setFocus()
+        self._search_panel.raise_()
+        self._sp_anim = QPropertyAnimation(self._search_panel, b"geometry")
+        self._sp_anim.setDuration(200)
+        self._sp_anim.setStartValue(start)
+        self._sp_anim.setEndValue(end)
+        self._sp_anim.setEasingCurve(QEasingCurve.OutCubic)
+        if on_open and self._search_panel_visible:
+            try:
+                self._sp_anim.finished.disconnect()
+            except TypeError:
+                pass
+            self._sp_anim.finished.connect(on_open)
+        self._sp_anim.start()
+
+    def _sp_filter_cards(self):
+        try:
+            text = self._sp_search.text().strip().lower()
+            for i in reversed(range(self._sp_cards_layout.count())):
+                w = self._sp_cards_layout.itemAt(i).widget()
+                if w:
+                    w.setParent(None)
+                    w.deleteLater()
+            filtered = []
+            for p in self._sp_all_products:
+                name = (p.get("name") or "").lower()
+                if not text or text in name:
+                    filtered.append(p)
+            cols = 4
+            for i, p in enumerate(filtered):
+                card = self._sp_make_card(p)
+                self._sp_cards_layout.addWidget(card, i // cols, i % cols)
+            if not filtered:
+                no_items = QLabel("🚫 لا توجد مواد غير مكودة\nقم بإضافة مواد واختيار 'بدون باركود'")
+                no_items.setAlignment(Qt.AlignCenter)
+                no_items.setWordWrap(True)
+                no_items.setStyleSheet("font-size:18px;font-weight:600;color:#a78bfa;background:transparent;border:none;padding:40px;")
+                self._sp_cards_layout.addWidget(no_items, 0, 0, 1, cols)
+            self._sp_count_lbl.setText(f"{len(filtered)} مادة")
+        except Exception:
+            pass
+
+    def _sp_make_card(self, product):
+        try:
+            card = QFrame()
+            stock = int(product.get("stock_quantity", 0))
+            bc = product.get("is_barcoded", 1)
+            if bc == 0:
+                accent = "#a855f7"
+            elif stock <= 0:
+                accent = "#ef4444"
+            elif stock <= 5:
+                accent = "#0d9488"
+            else:
+                accent = "#22c55e"
+            card.setFixedSize(180, 155)
+            card.setCursor(Qt.PointingHandCursor)
+            card.setStyleSheet(
+                f"QFrame{{"
+                f"background:#1e1b4b;"
+                f"border:1px solid #374151;"
+                f"border-top:4px solid {accent};"
+                f"border-radius:12px;"
+                f"}}"
+                f"QFrame:hover{{"
+                f"background:#312e81;"
+                f"border-color:#6366f1;"
+                f"border-top:4px solid {accent};"
+                f"}}"
+            )
+            cl = QVBoxLayout(card)
+            cl.setContentsMargins(10, 6, 10, 8)
+            cl.setSpacing(2)
+            nm = QLabel(product.get("name", ""))
+            nm.setWordWrap(True)
+            nm.setAlignment(Qt.AlignCenter)
+            nm.setStyleSheet("font-size:13px;font-weight:800;color:#f1f5f9;background:transparent;border:none;")
+            cl.addWidget(nm)
+            price = float(product.get("sale_price", 0))
+            pr = QLabel(f"{format_currency(str(price))} د.ع")
+            pr.setAlignment(Qt.AlignCenter)
+            pr.setStyleSheet("font-size:18px;font-weight:900;color:#c084fc;background:transparent;border:none;")
+            cl.addWidget(pr)
+            sc = "#86efac" if stock > 5 else ("#14b8a6" if stock > 0 else "#fca5a5")
+            sl = QLabel(f"المخزون: {stock}")
+            sl.setAlignment(Qt.AlignCenter)
+            sl.setStyleSheet(f"font-size:13px;font-weight:700;color:{sc};background:transparent;border:none;")
+            cl.addWidget(sl)
+            if bc == 0:
+                tag = QLabel("🚫 غير مكود")
+                tag.setAlignment(Qt.AlignCenter)
+                tag.setStyleSheet("font-size:11px;font-weight:700;color:#a855f7;background:#3b0764;border-radius:5px;padding:2px 6px;margin:0 10px;")
+                cl.addWidget(tag)
+            card.mousePressEvent = lambda e, p=product: self._sp_add_to_cart(p)
+            return card
+        except Exception:
+            return QFrame()
+
+    def _sp_add_to_cart(self, product):
+        if not hasattr(self, '_sp_cart_items'):
+            self._sp_cart_items = []
+        pid = product["id"]
+        existing = [it for it in self._sp_cart_items if it["id"] == pid]
+        if existing:
+            reply = QMessageBox.question(
+                self, "منتج مكرر",
+                f"المنتج {product['name']} موجود مسبقاً.\nهل تود إضافة كمية إضافية؟",
+                QMessageBox.Yes | QMessageBox.No
+            )
+            if reply == QMessageBox.No:
+                return
+        item = dict(product)
+        item["_sp_qty"] = int(self._unit_qty_label.text() or "1")
+        item["_sp_is_pack"] = self._is_pack
+        self._sp_cart_items.append(item)
+        self._sp_refresh_cart()
+
+    def _sp_refresh_cart(self):
+        if not hasattr(self, '_sp_cart_items'):
+            self._sp_cart_items = []
+        self._sp_cart.clear()
+        for it in self._sp_cart_items:
+            price = float(it.get("sale_price", 0))
+            qty = it.get("_sp_qty", 1)
+            unit = "علبة" if it.get("_sp_is_pack", True) else "مفرد"
+            self._sp_cart.addItem(QListWidgetItem(
+                f'{it.get("name", "")} | {qty} {unit} — {format_currency(str(price))} د.ع'
+            ))
+        self._sp_cart_title.setText(f"🛒 السلة ({len(self._sp_cart_items)})")
+
+    def _sp_clear_cart(self):
+        self._sp_cart_items = []
+        self._sp_refresh_cart()
+
+    def _sp_confirm(self):
+        try:
+            if not hasattr(self, '_sp_cart_items'):
+                self._sp_cart_items = []
+            for it in self._sp_cart_items:
+                bc = it.get("barcode")
+                if bc:
+                    sp_qty = it.get("_sp_qty", 1)
+                    sp_pack = it.get("_sp_is_pack", True)
+                    self._add_product_by_barcode(bc, override_qty=sp_qty, override_is_pack=sp_pack)
+            self._sp_cart_items = []
+            self._sp_refresh_cart()
+            self._toggle_search_panel()
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            QMessageBox.critical(self, "خطأ", f"فشل تأكيد السلة:\n{str(e)}")
+
     def _show_product_price(self, product):
-        strip_price = to_decimal(product["sale_price"])
+        strip_price = round_to_nearest_250(to_decimal(product["sale_price"]))
         qty = int(dict(product).get("strips_per_pack", 1))
         if self._is_pack:
             price = strip_price * qty
             unit_name = "للعلبة"
         else:
-            price = strip_price
+            unit_qty = int(self._unit_qty_label.text() or "1")
+            price = strip_price * unit_qty
             unit_name = "للمفرد"
         self._product_price_lbl.setText(f"{format_currency(price)} {unit_name}")
 
@@ -712,7 +1347,16 @@ class POSWidget(QWidget):
         self._add_product_by_barcode(barcode)
         self.barcode_input.clear()
 
-    def _add_product_by_barcode(self, barcode):
+    def _add_product_by_barcode(self, barcode, override_qty=None, override_is_pack=None):
+        try:
+            return self._add_product_by_barcode_impl(barcode, override_qty, override_is_pack)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            QMessageBox.critical(self, "خطأ", f"فشل إضافة المنتج:\n{str(e)}")
+            return None
+
+    def _add_product_by_barcode_impl(self, barcode, override_qty=None, override_is_pack=None):
         product = self.product_ctrl.search_by_barcode(barcode)
         if not product:
             QMessageBox.warning(self, "خطأ", f"لم يتم العثور على منتج بالباركود: {barcode}")
@@ -727,7 +1371,7 @@ class POSWidget(QWidget):
         if stk <= 0:
             self._product_stock_lbl.setStyleSheet("font-size:22px;font-weight:700;color:#ef4444;background:transparent")
         elif stk <= 5:
-            self._product_stock_lbl.setStyleSheet("font-size:22px;font-weight:700;color:#f59e0b;background:transparent")
+            self._product_stock_lbl.setStyleSheet("font-size:22px;font-weight:700;color:#0d9488;background:transparent")
         else:
             self._product_stock_lbl.setStyleSheet("font-size:22px;font-weight:700;color:#60a5fa;background:transparent")
 
@@ -742,14 +1386,17 @@ class POSWidget(QWidget):
                 return
 
         existing = None
-        sell_unit = self._get_unit_name()
-        unit_price = self._get_unit_price(product)
+        sp_pack = override_is_pack if override_is_pack is not None else self._is_pack
+        sell_unit = "علبة" if sp_pack else "مفرد"
+        strip_price = round_to_nearest_250(to_decimal(product["sale_price"]))
+        pstrips = int(dict(product).get("strips_per_pack", 1))
+        unit_price = strip_price * pstrips if sp_pack else strip_price
         for item in self.current_items:
             if item["product_id"] == product["id"] and item.get("sell_unit") == sell_unit:
                 existing = item
                 break
 
-        original_strip_price = to_decimal(product["sale_price"])
+        original_strip_price = round_to_nearest_250(to_decimal(product["sale_price"]))
         deal_info = None
 
         # ── Check for doctor deal/discount ──
@@ -766,54 +1413,50 @@ class POSWidget(QWidget):
                 deal_type = reward.get("deal_type", "deal")
                 reward_val = to_decimal(reward.get("reward_value", "0"))
                 if deal_type == "deal":
+                    unit_price = round_up_to_250(unit_price + reward_val)
                     deal_info = {
                         "type": "deal",
                         "original": original_strip_price,
                         "modified": unit_price,
                         "cost": reward_val,
-                        "purchase": to_decimal(product.get("purchase_price", "0")),
+                        "purchase": to_decimal(product["purchase_price"] if product["purchase_price"] else "0"),
                     }
                 elif deal_type == "discount":
-                    unit_price = max(unit_price - reward_val, DECIMAL_ZERO)
+                    unit_price = round_down_to_250(max(unit_price - reward_val, DECIMAL_ZERO))
                     deal_info = {
                         "type": "discount",
                         "original": original_strip_price,
                         "modified": unit_price,
                         "cost": reward_val,
-                        "purchase": to_decimal(product.get("purchase_price", "0")),
+                        "purchase": to_decimal(product["purchase_price"] if product["purchase_price"] else "0"),
                     }
 
         # ── Show deal info frame ──
-        if deal_info and getattr(self, '_show_deal_cost', False):
+        if deal_info:
             self._deal_frame.setVisible(True)
             if deal_info["type"] == "deal":
-                profit = deal_info["modified"] - deal_info["purchase"] - deal_info["cost"]
-                self._deal_title_lbl.setText(f"🏷 ديل — د. {self.selected_doctor['name']}")
+                self._deal_title_lbl.setText(f"🏷 ديل ↑  د. {self.selected_doctor['name']}")
                 self._deal_title_lbl.setStyleSheet("font-size:14px;font-weight:700;color:#a78bfa;background:transparent")
                 self._deal_frame.setStyleSheet(
                     "QFrame{background:#1a1a2e;border:1.5px solid #7c3aed50;border-radius:10px;padding:6px}"
                 )
-                self._deal_cost_lbl.setText(f"حصة الطبيب: {format_currency(deal_info['cost'])}")
-                self._deal_cost_lbl.setStyleSheet("font-size:14px;font-weight:700;color:#fbbf24;background:transparent")
-                self._deal_orig_lbl.setText(f"الكلفة: {format_currency(deal_info['purchase'])}")
-                self._deal_new_lbl.setText(f"صافي الربح: {format_currency(profit)}")
-                self._deal_new_lbl.setStyleSheet("font-size:14px;font-weight:700;color:#38bdf8;background:transparent")
+                self._deal_new_lbl.setText(f"{format_currency(deal_info['original'])} → {format_currency(deal_info['modified'])} د.ع")
+                self._deal_new_lbl.setStyleSheet("font-size:18px;font-weight:800;color:#f1f5f9;background:transparent")
             else:
-                self._deal_title_lbl.setText(f"🏷 تخفيض — د. {self.selected_doctor['name']}")
+                self._deal_title_lbl.setText(f"🏷 تخفيض ↓  د. {self.selected_doctor['name']}")
                 self._deal_title_lbl.setStyleSheet("font-size:14px;font-weight:700;color:#34d399;background:transparent")
                 self._deal_frame.setStyleSheet(
                     "QFrame{background:#0a1a1a;border:1.5px solid #10b98150;border-radius:10px;padding:6px}"
                 )
-                self._deal_cost_lbl.setText(f"قيمة الخصم: {format_currency(deal_info['cost'])}")
-                self._deal_cost_lbl.setStyleSheet("font-size:14px;font-weight:700;color:#34d399;background:transparent")
-                self._deal_orig_lbl.setText(f"الأصلي: {format_currency(deal_info['original'])}")
-                self._deal_new_lbl.setText(f"الجديد: {format_currency(deal_info['modified'])}")
-                self._deal_new_lbl.setStyleSheet("font-size:16px;font-weight:700;color:#f1f5f9;background:transparent")
+                self._deal_new_lbl.setText(f"{format_currency(deal_info['original'])} → {format_currency(deal_info['modified'])} د.ع")
+                self._deal_new_lbl.setStyleSheet("font-size:18px;font-weight:800;color:#f1f5f9;background:transparent")
         else:
             self._deal_frame.setVisible(False)
 
+        add_qty = override_qty if override_qty is not None else (int(self._unit_qty_label.text() or "1") if not self._is_pack else 1)
+
         if existing:
-            existing["quantity"] += 1
+            existing["quantity"] += add_qty
             existing["unit_price"] = unit_price
             existing["original_price"] = original_strip_price
             existing["total_price"] = existing["quantity"] * existing["unit_price"]
@@ -823,10 +1466,10 @@ class POSWidget(QWidget):
                 "product_id": product["id"],
                 "barcode": product["barcode"],
                 "name": product["name"],
-                "quantity": 1,
+                "quantity": add_qty,
                 "unit_price": unit_price,
                 "original_price": original_strip_price,
-                "total_price": unit_price,
+                "total_price": unit_price * add_qty,
                 "sell_unit": sell_unit,
                 "deal_type": deal_info["type"] if deal_info else None,
             })
@@ -902,7 +1545,8 @@ class POSWidget(QWidget):
 
             price_spin = QDoubleSpinBox()
             price_spin.setRange(0, 99999999)
-            price_spin.setDecimals(2)
+            price_spin.setDecimals(0)
+            price_spin.setLocale(QLocale(QLocale.English, QLocale.UnitedStates))
             price_spin.setValue(float(item["unit_price"]))
             price_spin.setStyleSheet(_spin_style() + " QDoubleSpinBox{font-size:15px;}")
             price_spin.setFixedHeight(44)
@@ -999,8 +1643,8 @@ class POSWidget(QWidget):
         # Auto-fill paid = total (full payment by default)
         if not (self._payment_method == "آجل"):
             self.paid_input.setValue(float(total))
-        self._sum_remain_lab_lbl.setText("0.00")
-        self._sum_remain_patient_lbl.setText("0.00")
+        self._sum_remain_lab_lbl.setText("0")
+        self._sum_remain_patient_lbl.setText("0")
         self._update_stats_bar()
 
     def _update_totals_from_subtotal(self):
@@ -1040,6 +1684,7 @@ class POSWidget(QWidget):
             self._card3_total_lbl.setValue(float(total))
             self._sum_total_lbl.setText(format_currency(total))
             self._update_remainders(total)
+            self._check_discount_warning()
         finally:
             self._is_calculating = False
 
@@ -1060,11 +1705,67 @@ class POSWidget(QWidget):
             self._discount_pct_lbl.setText(f"% {discount_pct:.1f}")
             self._sum_total_lbl.setText(format_currency(total))
             self._update_remainders(total)
+            self._check_discount_warning()
         finally:
             self._is_calculating = False
 
     def _update_totals_from_paid(self):
         pass  # paid is now auto-filled, no manual update needed
+
+    # ──────────────────────────────────────────
+    # Cost / Discount Warning
+    # ──────────────────────────────────────────
+    def _calc_cart_cost(self) -> Decimal:
+        """Calculate total purchase cost of all items in cart."""
+        if not self.current_items:
+            return DECIMAL_ZERO
+        pids = list({item["product_id"] for item in self.current_items})
+        if not pids:
+            return DECIMAL_ZERO
+        placeholders = ",".join("?" for _ in pids)
+        rows = self.product_ctrl.db.fetchall(
+            f"SELECT id, sale_price, purchase_price, strips_per_pack FROM products WHERE id IN ({placeholders})",
+            tuple(pids),
+        )
+        prod_map = {}
+        for r in rows:
+            prod_map[r["id"]] = {
+                "sale_price": to_decimal(r["sale_price"]),
+                "purchase_price": to_decimal(r["purchase_price"]),
+                "strips_per_pack": int(r["strips_per_pack"] or 1),
+            }
+        total_cost = DECIMAL_ZERO
+        for item in self.current_items:
+            pid = item["product_id"]
+            p = prod_map.get(pid)
+            if not p:
+                continue
+            sp = p["sale_price"]
+            pp = p["purchase_price"]
+            spp = p["strips_per_pack"]
+            if not sp:
+                continue
+            total_cost += item["total_price"] / (sp * spp) * pp
+        return total_cost.quantize(Decimal("0.01"))
+
+    def _check_discount_warning(self):
+        """Show red flash on discount input if profit would be ≤ 0."""
+        subtotal = sum((item["total_price"] for item in self.current_items), DECIMAL_ZERO)
+        if subtotal <= DECIMAL_ZERO:
+            return
+        discount_amt = to_decimal(self.discount_amount_input.value())
+        cost = self._calc_cart_cost()
+        profit = subtotal - discount_amt - cost
+        if profit <= DECIMAL_ZERO:
+            self.discount_amount_input.setStyleSheet(
+                "QDoubleSpinBox{font-size:19px;font-weight:700;padding:4px 3px;"
+                "background:#1a0a0a;border:2px solid #ef4444;border-radius:6px;color:#ef4444}"
+            )
+        else:
+            self.discount_amount_input.setStyleSheet(
+                "QDoubleSpinBox{font-size:19px;font-weight:700;padding:4px 3px;"
+                "background:#0b1120;border:none;border-bottom:2px solid #2a3f5f;border-radius:6px;color:#f1f5f9}"
+            )
 
     def _update_totals(self):
         if hasattr(self, '_is_calculating') and self._is_calculating:
@@ -1087,6 +1788,7 @@ class POSWidget(QWidget):
             self._sum_total_lbl.setText(format_currency(total))
             
             self._update_remainders(total)
+            self._check_discount_warning()
         finally:
             self._is_calculating = False
 
@@ -1098,6 +1800,9 @@ class POSWidget(QWidget):
     # ──────────────────────────────────────────
     @safe_operation("عذراً، حدث خطأ أثناء حفظ الفاتورة.")
     def _save_invoice(self):
+        if self._return_mode:
+            self._save_edited_invoice()
+            return
         if not self.current_items:
             QMessageBox.warning(self, "تنبيه", "الفاتورة فارغة. أضف منتجات قبل الحفظ.")
             return
@@ -1159,6 +1864,9 @@ class POSWidget(QWidget):
             QMessageBox.critical(self, "خطأ", f"حدث خطأ أثناء حفظ الفاتورة:\n{str(e)}")
 
     def _clear_invoice(self):
+        if self._return_mode:
+            self._exit_return_mode()
+            return
         self.current_items.clear()
         self.selected_customer = None
         self.customer_label.setText("")
@@ -1217,6 +1925,7 @@ class POSWidget(QWidget):
         """Recalculate prices for all cart items based on selected doctor's deals."""
         if not self.current_items:
             return
+        has_any_deal = False
         for item in self.current_items:
             strip_price = item.get("original_price", item["unit_price"])
             sell_unit = item.get("sell_unit", "مفرد")
@@ -1232,15 +1941,15 @@ class POSWidget(QWidget):
                         cat_id,
                     )
                     if reward:
+                        has_any_deal = True
                         deal_type = reward.get("deal_type", "deal")
                         reward_val = to_decimal(reward.get("reward_value", "0"))
                         if deal_type == "deal":
-                            new_strip_price = strip_price
+                            new_strip_price = round_up_to_250(strip_price + reward_val)
                         elif deal_type == "discount":
-                            new_strip_price = max(strip_price - reward_val, DECIMAL_ZERO)
+                            new_strip_price = round_down_to_250(max(strip_price - reward_val, DECIMAL_ZERO))
                         else:
                             new_strip_price = strip_price
-                        # Convert back to sell unit price
                         qty = int(prod_dict.get("strips_per_pack", 1))
                         if sell_unit == "علبة":
                             item["unit_price"] = new_strip_price * qty
@@ -1263,6 +1972,31 @@ class POSWidget(QWidget):
             item["total_price"] = item["quantity"] * item["unit_price"]
         self._refresh_invoice_table()
         self._update_totals()
+        # Update deal frame for first item if doctor is selected
+        if self.selected_doctor and self.current_items:
+            first = self.current_items[0]
+            if first.get("deal_type"):
+                self._deal_frame.setVisible(True)
+                is_deal = first["deal_type"] == "deal"
+                self._deal_title_lbl.setText(
+                    f"🏷 ديل ↑  د. {self.selected_doctor['name']}" if is_deal
+                    else f"🏷 تخفيض ↓  د. {self.selected_doctor['name']}"
+                )
+                self._deal_title_lbl.setStyleSheet(
+                    "font-size:14px;font-weight:700;color:#a78bfa;background:transparent" if is_deal
+                    else "font-size:14px;font-weight:700;color:#34d399;background:transparent"
+                )
+                self._deal_frame.setStyleSheet(
+                    "QFrame{background:#1a1a2e;border:1.5px solid #7c3aed50;border-radius:10px;padding:6px}" if is_deal
+                    else "QFrame{background:#0a1a1a;border:1.5px solid #10b98150;border-radius:10px;padding:6px}"
+                )
+                orig = first.get("original_price", first["unit_price"])
+                self._deal_new_lbl.setText(f"{format_currency(orig)} → {format_currency(first['unit_price'])} د.ع")
+                self._deal_new_lbl.setStyleSheet("font-size:18px;font-weight:800;color:#f1f5f9;background:transparent")
+            else:
+                self._deal_frame.setVisible(False)
+        else:
+            self._deal_frame.setVisible(False)
 
     def _clear_doctor(self):
         self.selected_doctor = None
@@ -1319,3 +2053,616 @@ class POSWidget(QWidget):
         self._print_after_save = True
         self._save_invoice()
         self._print_after_save = False
+
+    # ─────────────────────────────────────
+    # Hold / Resume Invoice
+    # ─────────────────────────────────────
+    def _hold_invoice(self):
+        if not self.current_items:
+            QMessageBox.warning(self, "تنبيه", "الفاتورة فارغة. أضف منتجات قبل التعليق.")
+            return
+        if self._return_mode:
+            QMessageBox.warning(self, "تنبيه", "لا يمكن تعليق فاتورة في وضع الإرجاع.")
+            return
+
+        import json
+        from database.connection import DatabaseManager
+        db = DatabaseManager()
+
+        items_json = []
+        for item in self.current_items:
+            items_json.append({
+                "product_id": item["product_id"],
+                "name": item.get("name", ""),
+                "quantity": item["quantity"],
+                "unit_price": str(item["unit_price"]),
+                "total_price": str(item["total_price"]),
+            })
+
+        customer_id = self.selected_customer["id"] if self.selected_customer else None
+        customer_name = self.selected_customer["name"] if self.selected_customer else None
+        doctor_id = self.selected_doctor["id"] if self.selected_doctor else None
+        doctor_name = self.selected_doctor["name"] if self.selected_doctor else None
+
+        subtotal = sum((item["total_price"] for item in self.current_items), DECIMAL_ZERO)
+        discount = to_decimal(self.discount_amount_input.value())
+        payment_method = self._payment_method
+
+        try:
+            db.execute(
+                "INSERT INTO held_invoices (user_id, items_json, subtotal, discount, payment_method, customer_id, customer_name, doctor_id, doctor_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (self.user_data["id"], json.dumps(items_json, ensure_ascii=False),
+                 from_decimal(subtotal), from_decimal(discount), payment_method,
+                 customer_id, customer_name, doctor_id, doctor_name),
+            )
+            from utils.toast import ToastNotification
+            ToastNotification.show_message("تم تعليق الفاتورة بنجاح.\nيمكنك استرجاعها من قائمة المعلقات.", 5000, self, "⏸ تعليق")
+            self._clear_invoice()
+        except Exception as e:
+            QMessageBox.critical(self, "خطأ", f"فشل تعليق الفاتورة:\n{str(e)}")
+
+    def _show_held_invoices(self):
+        from database.connection import DatabaseManager
+        db = DatabaseManager()
+        rows = db.fetchall(
+            "SELECT * FROM held_invoices WHERE user_id = ? ORDER BY created_at DESC",
+            (self.user_data["id"],),
+        )
+        if not rows:
+            QMessageBox.information(self, "📋 المعلقات", "لا توجد فواتير معلقة.")
+            return
+
+        import json
+        from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QScrollArea, QFrame, QHBoxLayout,
+                                     QPushButton, QLabel)
+        from PyQt5.QtCore import Qt
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("📋 الفواتير المعلقة")
+        dialog.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
+        dialog.setStyleSheet("QDialog{background:#0b1120;border:1px solid #1e293b;border-radius:12px;}")
+        dialog.resize(800, 650)
+
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(20, 12, 20, 20)
+        layout.setSpacing(10)
+
+        # ── Top bar ──
+        top = QHBoxLayout()
+        top.setContentsMargins(0, 0, 0, 0)
+        title = QLabel("📋 الفواتير المعلقة")
+        title.setStyleSheet("font-size:20px;font-weight:700;color:#14b8a6;background:transparent;border:none;padding:4px 0;")
+        top.addWidget(title)
+        top.addStretch()
+        cx = QPushButton("✕")
+        cx.setFixedSize(34, 34)
+        cx.setCursor(Qt.PointingHandCursor)
+        cx.setStyleSheet("QPushButton{font-size:16px;font-weight:700;color:#94a3b8;background:#1e293b;border:none;border-radius:17px;}QPushButton:hover{background:#ef4444;color:white;}")
+        cx.clicked.connect(dialog.reject)
+        top.addWidget(cx)
+        layout.addLayout(top)
+
+        # ── Scroll area ──
+        sc = QScrollArea()
+        sc.setWidgetResizable(True)
+        sc.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        sc.setStyleSheet("""
+            QScrollArea{background:transparent;border:none;}
+            QScrollBar:vertical{background:#1e293b;width:8px;border-radius:4px;}
+            QScrollBar::handle:vertical{background:#475569;border-radius:4px;min-height:24px;}
+            QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;}
+        """)
+        cont = QWidget()
+        cont.setStyleSheet("background:transparent;")
+        cv = QVBoxLayout(cont)
+        cv.setSpacing(10)
+
+        for r in rows:
+            items = json.loads(r["items_json"])
+            item_count = len(items)
+            time_str = r["created_at"][:19] if r["created_at"] else ""
+            customer = r["customer_name"] or "—"
+            discount = to_decimal(r["discount"])
+
+            # ── Card ──
+            card = QFrame()
+            card.setStyleSheet("""
+                QFrame{background:#141d2e;border:1px solid #14b8a640;border-radius:10px;}
+                QFrame:hover{border-color:#14b8a6;}
+            """)
+            cl = QVBoxLayout(card)
+            cl.setContentsMargins(14, 10, 14, 10)
+            cl.setSpacing(8)
+
+            # Header row
+            h = QHBoxLayout()
+            h.setContentsMargins(0, 0, 0, 0)
+            hdr_txt = QLabel(f"<b style='font-size:15px;color:#f1f5f9;'>#{r['id']}</b>  "
+                             f"<span style='font-size:12px;color:#64748b;'>{time_str}</span>")
+            hdr_txt.setTextFormat(Qt.RichText)
+            hdr_txt.setStyleSheet("background:transparent;border:none;")
+            h.addWidget(hdr_txt)
+            h.addStretch()
+            resume_btn = QPushButton("▶ استرجاع")
+            resume_btn.setStyleSheet("QPushButton{font-size:12px;font-weight:700;background:#0d9488;color:#fff;border:none;border-radius:5px;padding:5px 14px;}QPushButton:hover{background:#0f766e;}")
+            resume_btn.clicked.connect(lambda ch, rid=r["id"], d=dialog: self._resume_held_invoice(rid, d))
+            h.addWidget(resume_btn)
+            del_btn = QPushButton("✕ حذف")
+            del_btn.setStyleSheet("QPushButton{font-size:11px;color:#ef4444;background:transparent;border:1px solid #ef4444;border-radius:5px;padding:5px 10px;}QPushButton:hover{background:#ef444420;}")
+            del_btn.clicked.connect(lambda ch, rid=r["id"], c=card: self._delete_held_invoice(rid, c))
+            h.addWidget(del_btn)
+            cl.addLayout(h)
+
+            # Summary
+            sum_txt = (f"المواد: {item_count}  |  "
+                       f"الإجمالي: <b style='color:#7ba3ff;'>{format_currency(r['subtotal'])} د.ع</b>"
+                       + (f"  |  الخصم: <b style='color:#ef4444;'>{format_currency(discount)} د.ع</b>" if discount > DECIMAL_ZERO else "")
+                       + f"  |  الزبون: {customer}")
+            summary = QLabel(sum_txt)
+            summary.setStyleSheet("font-size:12px;color:#94a3b8;background:transparent;border:none;")
+            summary.setTextFormat(Qt.RichText)
+            cl.addWidget(summary)
+
+            # Items list — compact rows as labels inside a frame with max 12 visible
+            items_frame = QFrame()
+            items_frame.setStyleSheet("QFrame{background:#0b1120;border:1px solid #1e293b;border-radius:6px;}")
+            il = QVBoxLayout(items_frame)
+            il.setContentsMargins(10, 6, 10, 6)
+            il.setSpacing(2)
+
+            max_show = 12
+            show_count = min(item_count, max_show)
+            for i in range(show_count):
+                it = items[i]
+                row_w = QFrame()
+                row_w.setStyleSheet("QFrame{background:transparent;}")
+                rl = QHBoxLayout(row_w)
+                rl.setContentsMargins(0, 2, 0, 2)
+                rl.setSpacing(8)
+                name_lbl = QLabel(it.get("name", ""))
+                name_lbl.setStyleSheet("font-size:12px;color:#e2e8f0;background:transparent;border:none;")
+                qty_lbl = QLabel(f"×{it['quantity']}")
+                qty_lbl.setStyleSheet("font-size:12px;color:#7ba3ff;background:transparent;border:none;")
+                qty_lbl.setFixedWidth(50)
+                qty_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                price_lbl = QLabel(f"{format_currency(it['total_price'])} د.ع")
+                price_lbl.setStyleSheet("font-size:12px;color:#e2e8f0;background:transparent;border:none;")
+                price_lbl.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+                rl.addWidget(name_lbl, 1)
+                rl.addWidget(qty_lbl)
+                rl.addWidget(price_lbl)
+                il.addWidget(row_w)
+
+            if item_count > max_show:
+                more_lbl = QLabel(f"... و{item_count - max_show} مواد أخرى")
+                more_lbl.setStyleSheet("font-size:11px;color:#64748b;background:transparent;border:none;padding:2px 0;")
+                il.addWidget(more_lbl)
+
+            cl.addWidget(items_frame)
+            cv.addWidget(card)
+
+        sc.setWidget(cont)
+        layout.addWidget(sc, 1)
+
+        close_btn = QPushButton("إغلاق")
+        close_btn.setStyleSheet("QPushButton{font-size:14px;font-weight:700;background:#334155;color:#f1f5f9;border:none;border-radius:8px;padding:10px 0;}QPushButton:hover{background:#475569;}")
+        close_btn.clicked.connect(dialog.accept)
+        layout.addWidget(close_btn)
+
+        dialog.exec_()
+        close_btn.clicked.connect(dialog.accept)
+        layout.addWidget(close_btn)
+
+        dialog.exec_()
+
+    def _resume_held_invoice(self, held_id, dialog=None):
+        from database.connection import DatabaseManager
+        import json
+        db = DatabaseManager()
+        row = db.fetchone("SELECT * FROM held_invoices WHERE id = ?", (held_id,))
+        if not row:
+            QMessageBox.warning(self, "خطأ", "الفاتورة غير موجودة")
+            return
+
+        if self.current_items:
+            reply = QMessageBox.question(self, "فاتورة موجودة",
+                "توجد فاتورة حالية. هل تريد مسحها واسترجاع المعلقة؟",
+                QMessageBox.Yes | QMessageBox.No)
+            if reply != QMessageBox.Yes:
+                return
+            self._clear_invoice()
+
+        items = json.loads(row["items_json"])
+        for item in items:
+            self.current_items.append({
+                "product_id": item["product_id"],
+                "name": item.get("name", ""),
+                "quantity": item["quantity"],
+                "unit_price": to_decimal(item["unit_price"]),
+                "total_price": to_decimal(item["total_price"]),
+                "original_price": to_decimal(item["unit_price"]),
+                "sell_unit": "مفرد",
+                "deal_type": None,
+            })
+
+        self.discount_amount_input.setValue(float(to_decimal(row["discount"])))
+        if row["customer_name"]:
+            self.customer_label.setText(f"👤 {row['customer_name']}")
+        self._refresh_invoice_table()
+        self._update_totals()
+        self._update_stats_bar()
+        self._focus_barcode()
+
+        db.execute("DELETE FROM held_invoices WHERE id = ?", (held_id,))
+        if dialog:
+            dialog.accept()
+        QMessageBox.information(self, "✓ تم", "تم استرجاع الفاتورة المعلقة.\nيمكنك متابعة البيع.")
+
+    def _delete_held_invoice(self, held_id, card_widget):
+        from database.connection import DatabaseManager
+        db = DatabaseManager()
+        db.execute("DELETE FROM held_invoices WHERE id = ?", (held_id,))
+        card_widget.setParent(None)
+        card_widget.deleteLater()
+
+    # ═════════════════════════════════════
+    # Return Mode
+    # ═════════════════════════════════════
+
+    def _toggle_return_panel(self):
+        self._return_panel_visible = not self._return_panel_visible
+        pw = self.width()
+        panel_w = int(pw * 0.55)
+        anim = QPropertyAnimation(self._return_panel, b"geometry")
+        anim.setDuration(250)
+        anim.setEasingCurve(QEasingCurve.OutCubic)
+        if not self._return_panel_visible:
+            anim.setStartValue(self._return_panel.geometry())
+            anim.setEndValue(QRect(pw, 0, panel_w, self.height()))
+        else:
+            anim.setStartValue(QRect(pw, 0, panel_w, self.height()))
+            anim.setEndValue(QRect(pw - panel_w, 0, panel_w, self.height()))
+            self._return_panel.raise_()
+            self._load_today_invoices()
+        anim.start()
+        self._rp_anim = anim
+
+    def _load_today_invoices(self, filter_text=""):
+        for i in reversed(range(self._rp_grid.count())):
+            w = self._rp_grid.itemAt(i).widget()
+            if w:
+                w.deleteLater()
+
+        from datetime import date
+        today_str = date.today().isoformat()
+        rows = self.sale_ctrl.db.fetchall(
+            """SELECT s.*, u.full_name as user_name
+               FROM sales s
+               LEFT JOIN users u ON s.user_id = u.id
+               WHERE date(s.created_at) = ?
+               ORDER BY s.created_at DESC""",
+            (today_str,),
+        )
+
+        for r in rows:
+            inv_id = r["id"]
+            inv_num = r["invoice_number"]
+            total = r["total_amount"]
+            method = r["payment_method"]
+            user = r["user_name"] or ""
+            method_map = {"cash": "نقداً", "card": "بطاقة", "credit": "آجل"}
+            display_method = method_map.get(method, method)
+
+            # Filter by text if needed
+            if filter_text and filter_text.lower() not in str(inv_num).lower() and filter_text not in str(inv_id):
+                continue
+
+            card = QFrame()
+            card.setFixedHeight(70)
+            card.setCursor(Qt.PointingHandCursor)
+            card.setStyleSheet("""
+                QFrame{
+                    background:rgba(255,255,255,0.08);
+                    border:1px solid #14b8a660;
+                    border-radius:10px;
+                }
+                QFrame:hover{background:rgba(255,255,255,0.15);border-color:#14b8a6;}
+            """)
+            cl = QHBoxLayout(card)
+            cl.setContentsMargins(14, 8, 14, 8)
+            info = QLabel(f"<b>#{inv_id}</b> — {inv_num}<br><span style='font-size:12px;color:#14b8a6;'>{display_method} | {format_currency(total)} | {user}</span>")
+            info.setStyleSheet("font-size:15px;color:#f1f5f9;background:transparent;border:none;")
+            info.setTextFormat(Qt.RichText)
+            cl.addWidget(info)
+            cl.addStretch()
+            card.mousePressEvent = lambda e, sid=inv_id: self._select_return_invoice(sid)
+            self._rp_grid.addWidget(card)
+
+        if not rows:
+            empty = QLabel("📭 لا توجد فواتير لليوم")
+            empty.setStyleSheet("font-size:18px;color:#14b8a6;background:transparent;border:none;padding:40px;")
+            empty.setAlignment(Qt.AlignCenter)
+            self._rp_grid.addWidget(empty)
+
+    def _rp_filter_invoices(self, text):
+        self._load_today_invoices(text)
+
+    def _select_return_invoice(self, sale_id):
+        self._return_sale_id = sale_id
+        self._return_mode = True
+        self._toggle_return_panel()
+
+        sale = self.sale_ctrl.get_sale_by_id(sale_id)
+        if not sale:
+            QMessageBox.warning(self, "خطأ", "الفاتورة غير موجودة")
+            self._exit_return_mode()
+            return
+
+        items = self.sale_ctrl.get_sale_items(sale_id)
+        self.current_items = []
+        for si in items:
+            self.current_items.append({
+                "product_id": si["product_id"],
+                "sale_item_id": si["id"],
+                "quantity": si["quantity"],
+                "unit_price": to_decimal(si["unit_price"]),
+                "total_price": to_decimal(si["total_price"]),
+                "original_price": to_decimal(si["unit_price"]),
+                "sell_unit": "مفرد",
+                "deal_type": None,
+                "name": si["product_name"],
+            })
+
+        self._refresh_invoice_table()
+        self._update_totals()
+        self._update_stats_bar()
+
+        # Restore original discount (stored as absolute amount in DB)
+        sale_discount = to_decimal(sale["discount"] if sale["discount"] else "0")
+        self.discount_amount_input.setValue(float(sale_discount))
+
+        QMessageBox.information(self, "وضع الإرجاع",
+            f"تم تحميل الفاتورة #{sale_id}\n"
+            "قلل الكميات للمواد المطلوب إرجاعها ثم احفظ.")
+
+    def _exit_return_mode(self):
+        self._return_mode = False
+        self._return_sale_id = None
+        self._return_banner.setVisible(False)
+        self._return_panel_visible = False
+        self.current_items.clear()
+        self.invoice_table.setRowCount(0)
+        self.selected_customer = None
+        self.customer_label.setText("")
+        self.customer_input.clear()
+        self._clear_doctor()
+        self.discount_amount_input.setValue(0)
+        self._discount_pct_lbl.setText("% 0.0")
+        self.paid_input.setValue(0)
+        self._on_pay_btn("نقداً")
+        self._product_name_lbl.setText("—")
+        self._product_price_lbl.setText("—")
+        self._product_stock_lbl.setText("—")
+        self._deal_frame.setVisible(False)
+        self._last_added_item = None
+        self.undo_btn.setEnabled(False)
+        self._update_totals()
+        self._update_stats_bar()
+        self._focus_barcode()
+
+    def _save_edited_invoice(self):
+        """Full edit: add/remove items, change qty, change discount — with full reversal + re-apply."""
+        try:
+            if not self._return_mode or not self._return_sale_id:
+                return
+            if not self.current_items:
+                QMessageBox.warning(self, "تنبيه", "الفاتورة فارغة. أضف منتجات قبل الحفظ.")
+                return
+
+            sale_id = self._return_sale_id
+            original_sale = self.sale_ctrl.get_sale_by_id(sale_id)
+            original_items = self.sale_ctrl.get_sale_items(sale_id)
+            from database.connection import DatabaseManager
+            db = DatabaseManager()
+            os_dict = dict(original_sale) if original_sale else {}
+
+            subtotal = sum((item["total_price"] for item in self.current_items), DECIMAL_ZERO)
+            discount_amt = to_decimal(self.discount_amount_input.value())
+            net_total = (subtotal - discount_amt).quantize(to_decimal("0.01"))
+
+            details = f"<b>فاتورة #{sale_id}</b><br><br>"
+            details += "<table style='width:100%;border-collapse:collapse'>"
+            details += "<tr style='color:#94a3b8;font-size:13px'><th>المنتج</th><th>الكمية</th><th>الإجمالي</th></tr>"
+            for item in self.current_items:
+                if item["quantity"] <= 0:
+                    continue
+                details += f"<tr><td>{item.get('name', '')}</td><td>{item['quantity']}</td><td>{format_currency(item['total_price'])}</td></tr>"
+            details += "</table>"
+            details += f"<br><b>الإجمالي: {format_currency(subtotal)}</b>"
+            if discount_amt > DECIMAL_ZERO:
+                details += f"<br>الخصم: {format_currency(discount_amt)}"
+            details += f"<br><b>الصافي: {format_currency(net_total)}</b>"
+            details += "<br><br>سيتم إرجاع المواد السابقة للمخزن وتطبيق التعديلات."
+
+            confirm = QMessageBox(QMessageBox.Question, "تأكيد التعديل",
+                "هل أنت متأكد من حفظ التعديلات على الفاتورة؟",
+                QMessageBox.Yes | QMessageBox.No, self)
+            confirm.setInformativeText(details)
+            confirm.setDetailedText(details.replace("<br>", "\n").replace("<tr>", "\n").replace("<td>", "  ").replace("</td>", "").replace("</tr>", "").replace("</b>", "").replace("<b>", "").replace("<table>", "").replace("</table>", ""))
+            if confirm.exec_() != QMessageBox.Yes:
+                return
+
+            # 1. Record return transaction for audit trail
+            orig_data = [{
+                "sale_item_id": si["id"],
+                "product_id": si["product_id"],
+                "quantity": si["quantity"],
+                "unit_price": si["unit_price"],
+                "total_price": si["total_price"],
+            } for si in original_items]
+            if orig_data:
+                total_returned = sum(to_decimal(d["total_price"]) for d in orig_data)
+                db.execute(
+                    "INSERT INTO return_transactions (sale_id, user_id, reason, total_returned) VALUES (?, ?, ?, ?)",
+                    (sale_id, self.user_data["id"], "تعديل الفاتورة", from_decimal(total_returned)),
+                )
+                return_id = db.fetchone("SELECT last_insert_rowid()")[0]
+                for d in orig_data:
+                    db.execute(
+                        "INSERT INTO return_items (return_id, sale_item_id, product_id, quantity, unit_price, total_price) VALUES (?, ?, ?, ?, ?, ?)",
+                        (return_id, d["sale_item_id"], d["product_id"], d["quantity"],
+                         d["unit_price"], d["total_price"]),
+                    )
+
+            # 2. Return ALL original stock
+            for si in original_items:
+                prod = db.fetchone("SELECT sale_price FROM products WHERE id = ?", (si["product_id"],))
+                sp = to_decimal(prod["sale_price"]) if prod else DECIMAL_ZERO
+                strip_eq = int(to_decimal(si["total_price"]) / sp) if sp else si["quantity"]
+                db.execute("UPDATE products SET stock_quantity = stock_quantity + ? WHERE id = ?",
+                           (max(strip_eq, 0), si["product_id"]))
+
+            # 3. Remove old sale_items + doctor_rewards
+            db.execute("DELETE FROM sale_items WHERE sale_id = ?", (sale_id,))
+            db.execute("DELETE FROM doctor_rewards WHERE sale_id = ?", (sale_id,))
+
+            # 4. Remove old accounting entries
+            old_entries = db.fetchall(
+                "SELECT id FROM journal_entries WHERE reference_type='sale' AND reference_id=?",
+                (sale_id,),
+            )
+            for e in old_entries:
+                db.execute("DELETE FROM journal_lines WHERE journal_id = ?", (e["id"],))
+            db.execute("DELETE FROM journal_entries WHERE reference_type='sale' AND reference_id=?", (sale_id,))
+
+            # 5. Remove old debt if credit
+            payment_method = os_dict.get("payment_method", "cash")
+            customer_id = os_dict.get("customer_id")
+            if payment_method == "credit" and customer_id:
+                old_debt = db.fetchone("SELECT * FROM debts WHERE sale_id = ?", (sale_id,))
+                if old_debt:
+                    old_remaining = to_decimal(old_debt["remaining_amount"])
+                    cust = db.fetchone("SELECT * FROM customers WHERE id = ?", (customer_id,))
+                    if cust:
+                        curr = to_decimal(cust["total_debt"])
+                        db.execute("UPDATE customers SET total_debt=? WHERE id=?",
+                                   (from_decimal(max(curr - old_remaining, DECIMAL_ZERO)), customer_id))
+                    db.execute("DELETE FROM debts WHERE sale_id = ?", (sale_id,))
+
+            # 6. Update sale record
+            paid = to_decimal(os_dict.get("paid_amount", "0"))
+            db.execute(
+                "UPDATE sales SET total_amount=?, discount=?, paid_amount=? WHERE id=?",
+                (from_decimal(net_total), from_decimal(discount_amt), from_decimal(paid), sale_id),
+            )
+
+            # 7. Insert new items + deduct stock + doctor rewards
+            for item in self.current_items:
+                if item["quantity"] <= 0:
+                    continue
+                cursor = db.execute(
+                    "INSERT INTO sale_items (sale_id, product_id, quantity, unit_price, total_price) VALUES (?, ?, ?, ?, ?)",
+                    (sale_id, item["product_id"], item["quantity"],
+                     from_decimal(item["unit_price"]), from_decimal(item["total_price"])),
+                )
+                sale_item_id = cursor.lastrowid
+                prod = db.fetchone("SELECT sale_price FROM products WHERE id = ?", (item["product_id"],))
+                sp = to_decimal(prod["sale_price"]) if prod else DECIMAL_ZERO
+                strip_eq = int(to_decimal(item["total_price"]) / sp) if sp else item["quantity"]
+                db.execute("UPDATE products SET stock_quantity = stock_quantity - ? WHERE id = ?",
+                           (max(strip_eq, 0), item["product_id"]))
+                product = db.fetchone("SELECT category_id FROM products WHERE id = ?", (item["product_id"],))
+                cat_id = product["category_id"] if product else None
+                if self.selected_doctor:
+                    reward = self.doc_ctrl.calculate_reward_for_doctor(
+                        self.selected_doctor["id"], item["product_id"],
+                        from_decimal(item["unit_price"]), cat_id,
+                    )
+                    if reward:
+                        reward_val = to_decimal(reward["reward_value"])
+                        if reward["reward_type"] != "percentage":
+                            reward_val *= to_decimal(item["quantity"])
+                        self.doc_ctrl.record_reward(
+                            sale_id, sale_item_id, item["product_id"],
+                            reward["doctor_id"], reward["reward_type"], from_decimal(reward_val),
+                            modified_price=reward.get("modified_price", "0.00"),
+                            original_price=reward.get("original_price", "0.00"),
+                            doctor_share=from_decimal(reward_val),
+                        )
+
+            # 8. Create new accounting entry
+            self.sale_ctrl.acct.record_sale_transaction(
+                sale_id, from_decimal(net_total), from_decimal(paid), payment_method,
+            )
+
+            # 9. Create new debt if credit
+            if payment_method == "credit" and customer_id:
+                remaining = net_total - paid
+                if remaining > DECIMAL_ZERO:
+                    db.execute(
+                        "INSERT INTO debts (sale_id, customer_id, amount, paid_amount, remaining_amount, status) VALUES (?, ?, ?, ?, ?, 'pending')",
+                        (sale_id, customer_id, from_decimal(net_total), from_decimal(paid), from_decimal(remaining)),
+                    )
+                    db.execute(
+                        "UPDATE customers SET total_debt = printf('%.2f', CAST(total_debt AS REAL) + ?) WHERE id = ?",
+                        (from_decimal(remaining), customer_id),
+                    )
+
+            self.sale_completed.emit(sale_id)
+            QMessageBox.information(self, "✓ تم التعديل", "تم تعديل الفاتورة بنجاح.\nإرجاع المواد السابقة للمخزن وتطبيق التغييرات.")
+            self._exit_return_mode()
+        except Exception as e:
+            import traceback
+            tb = traceback.format_exc()
+            with open(r"D:\pharma\data\debug_error.txt", "a", encoding="utf-8") as f:
+                f.write(f"ERROR in _save_edited_invoice:\n{tb}\n---\n")
+            QMessageBox.critical(self, "خطأ", f"حدث خطأ أثناء تعديل الفاتورة:\n{str(e)}\n\nالتفاصيل كُتبت في data/debug_error.txt")
+            return
+
+    def _admin_delete_invoice(self):
+        """Admin only: fully delete/void an invoice (any date)."""
+        from PyQt5.QtWidgets import QInputDialog
+        sale_id, ok = QInputDialog.getInt(
+            self, "🗑️ حذف فاتورة", "أدخل رقم الفاتورة:", 1, 1, 9999999, 1
+        )
+        if not ok:
+            return
+        sale = self.sale_ctrl.get_sale_by_id(sale_id)
+        if not sale:
+            QMessageBox.warning(self, "خطأ", "الفاتورة غير موجودة")
+            return
+
+        items = self.sale_ctrl.get_sale_items(sale_id)
+        msg = f"فاتورة #{sale_id}\n"
+        msg += f"التاريخ: {sale['created_at']}\n"
+        msg += f"الإجمالي: {format_currency(sale['total_amount'])}\n"
+        msg += f"طريقة الدفع: {sale['payment_method']}\n"
+        msg += f"عدد المواد: {len(items)}\n\n"
+        msg += "⚠️ سيتم:\n• إرجاع المواد للمخزن\n• عكس القيود المحاسبية\n• حذف الفاتورة نهائياً"
+        confirm = QMessageBox.question(self, "تأكيد الحذف", msg,
+                                       QMessageBox.Yes | QMessageBox.No)
+        if confirm != QMessageBox.Yes:
+            return
+
+        try:
+            items_data = []
+            for si in items:
+                items_data.append({
+                    "sale_item_id": si["id"],
+                    "product_id": si["product_id"],
+                    "quantity": si["quantity"],
+                    "unit_price": si["unit_price"],
+                    "total_price": si["total_price"],
+                })
+            self.return_ctrl.create_return(
+                sale_id, self.user_data["id"], items_data,
+                "حذف فاتورة من المدير",
+            )
+            self.db.execute("DELETE FROM sale_items WHERE sale_id = ?", (sale_id,))
+            self.db.execute("DELETE FROM sales WHERE id = ?", (sale_id,))
+            self.sale_completed.emit(sale_id)
+            QMessageBox.information(self, "✓ تم", f"تم حذف الفاتورة #{sale_id} وعكس جميع القيود")
+        except Exception as e:
+            QMessageBox.critical(self, "خطأ", f"حدث خطأ أثناء الحذف:\n{str(e)}")
+            import traceback
+            traceback.print_exc()

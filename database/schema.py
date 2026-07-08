@@ -1,6 +1,6 @@
 from database.connection import DatabaseManager
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 17
 
 
 def get_current_version(db):
@@ -50,6 +50,34 @@ def migrate(db):
     if version < 10:
         _migrate_v9_to_v10(db)
         version = 10
+
+    if version < 11:
+        _migrate_v10_to_v11(db)
+        version = 11
+
+    if version < 12:
+        _migrate_v11_to_v12(db)
+        version = 12
+
+    if version < 13:
+        _migrate_v12_to_v13(db)
+        version = 13
+
+    if version < 14:
+        _migrate_v13_to_v14(db)
+        version = 14
+
+    if version < 15:
+        _migrate_v14_to_v15(db)
+        version = 15
+
+    if version < 16:
+        _migrate_v15_to_v16(db)
+        version = 16
+
+    if version < 17:
+        _migrate_v16_to_v17(db)
+        version = 17
 
     db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
@@ -196,6 +224,24 @@ def _create_initial_schema(db):
             payment_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             notes TEXT,
             FOREIGN KEY (debt_id) REFERENCES debts(id) ON DELETE CASCADE
+        )
+    """)
+
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS held_invoices (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            items_json TEXT NOT NULL,
+            subtotal TEXT NOT NULL DEFAULT '0.00',
+            discount TEXT NOT NULL DEFAULT '0.00',
+            payment_method TEXT DEFAULT 'cash',
+            customer_id INTEGER,
+            customer_name TEXT,
+            doctor_id INTEGER,
+            doctor_name TEXT,
+            notes TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id)
         )
     """)
 
@@ -461,3 +507,151 @@ def _migrate_v9_to_v10(db):
         db.execute("ALTER TABLE products ADD COLUMN pieces_per_strip INTEGER DEFAULT 1")
     except Exception:
         pass
+
+
+def _migrate_v10_to_v11(db):
+    """Add is_barcoded flag to products."""
+    try:
+        db.execute("ALTER TABLE products ADD COLUMN is_barcoded INTEGER DEFAULT 1")
+    except Exception:
+        pass
+
+
+def _migrate_v11_to_v12(db):
+    """Fix is_barcoded: NON- barcodes → 0, NULL → 1."""
+    try:
+        db.execute("UPDATE products SET is_barcoded = 0 WHERE barcode LIKE 'NON-%'")
+    except Exception:
+        pass
+    try:
+        db.execute("UPDATE products SET is_barcoded = 1 WHERE is_barcoded IS NULL")
+    except Exception:
+        pass
+
+
+def _migrate_v12_to_v13(db):
+    """Add expense_types table + income_date, user_name, expense_type_id to expenses."""
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS expense_types (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    try:
+        db.execute("ALTER TABLE expenses ADD COLUMN expense_type_id INTEGER REFERENCES expense_types(id)")
+    except Exception:
+        pass
+    try:
+        db.execute("ALTER TABLE expenses ADD COLUMN user_name TEXT")
+    except Exception:
+        pass
+    try:
+        db.execute("ALTER TABLE expenses ADD COLUMN income_date DATE")
+    except Exception:
+        pass
+
+
+def _migrate_v13_to_v14(db):
+    """Add expense_income_sources table for multi-day income deduction tracking."""
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS expense_income_sources (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            expense_id INTEGER NOT NULL,
+            income_date DATE NOT NULL,
+            amount TEXT NOT NULL DEFAULT '0.00',
+            FOREIGN KEY (expense_id) REFERENCES expenses(id) ON DELETE CASCADE
+        )
+    """)
+    rows = db.fetchall("SELECT id, income_date, amount FROM expenses WHERE income_date IS NOT NULL")
+    for r in rows:
+        db.execute(
+            "INSERT INTO expense_income_sources (expense_id, income_date, amount) VALUES (?, ?, ?)",
+            (r["id"], r["income_date"], r["amount"]),
+        )
+
+
+def _migrate_v14_to_v15(db):
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS return_transactions (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            sale_id         INTEGER NOT NULL,
+            user_id         INTEGER,
+            reason          TEXT,
+            total_returned  TEXT NOT NULL DEFAULT '0.00',
+            created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (sale_id) REFERENCES sales(id),
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+    """)
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS return_items (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            return_id           INTEGER NOT NULL,
+            sale_item_id        INTEGER,
+            product_id          INTEGER NOT NULL,
+            quantity            INTEGER NOT NULL,
+            unit_price          TEXT NOT NULL,
+            total_price         TEXT NOT NULL,
+            FOREIGN KEY (return_id) REFERENCES return_transactions(id) ON DELETE CASCADE,
+            FOREIGN KEY (product_id) REFERENCES products(id)
+        )
+    """)
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS user_permissions (
+            user_id       INTEGER NOT NULL,
+            permission    TEXT NOT NULL,
+            granted       INTEGER DEFAULT 1,
+            PRIMARY KEY (user_id, permission),
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        )
+    """)
+
+def _migrate_v15_to_v16(db):
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS held_invoices (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            items_json TEXT NOT NULL,
+            subtotal TEXT NOT NULL DEFAULT '0.00',
+            discount TEXT NOT NULL DEFAULT '0.00',
+            payment_method TEXT DEFAULT 'cash',
+            customer_id INTEGER,
+            customer_name TEXT,
+            doctor_id INTEGER,
+            doctor_name TEXT,
+            notes TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+    """)
+    db.execute("""
+        CREATE INDEX IF NOT EXISTS idx_held_invoices_user ON held_invoices(user_id)
+    """)
+
+def _migrate_v16_to_v17(db):
+    """Add expense cancellation support: is_cancelled flag + expense_cancellations audit table."""
+    try:
+        db.execute("ALTER TABLE expenses ADD COLUMN is_cancelled INTEGER DEFAULT 0")
+    except Exception:
+        pass
+    try:
+        db.execute("ALTER TABLE expenses ADD COLUMN cancelled_at DATETIME")
+    except Exception:
+        pass
+    try:
+        db.execute("ALTER TABLE expenses ADD COLUMN cancelled_by INTEGER REFERENCES users(id)")
+    except Exception:
+        pass
+
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS expense_cancellations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            expense_id INTEGER NOT NULL,
+            cancelled_by INTEGER NOT NULL,
+            cancelled_at DATETIME DEFAULT (datetime('now', 'localtime')),
+            reason TEXT,
+            FOREIGN KEY (expense_id) REFERENCES expenses(id),
+            FOREIGN KEY (cancelled_by) REFERENCES users(id)
+        )
+    """)

@@ -13,6 +13,7 @@ from PyQt5.QtWidgets import QApplication, QMessageBox
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont
 
+from utils.scaling import get_scale_factor, sc, scale_stylesheet
 from database.connection import DatabaseManager
 from database.schema import migrate
 from views.login_dialog import LoginDialog
@@ -27,13 +28,6 @@ def initialize_database():
     return db
 
 
-def load_stylesheet(app):
-    style_path = os.path.join(BASE_DIR, "resources", "styles", "style.qss")
-    if os.path.exists(style_path):
-        with open(style_path, "r", encoding="utf-8") as f:
-            app.setStyleSheet(f.read())
-
-
 def shutdown_backup():
     db = DatabaseManager()
     backup = DatabaseBackup(db.db_path)
@@ -44,15 +38,29 @@ def shutdown_backup():
         pass
 
 
+def load_stylesheet(app, scale):
+    qss_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "resources", "styles", "style.qss")
+    try:
+        with open(qss_path, "r", encoding="utf-8") as f:
+            qss = f.read()
+        app.setStyleSheet(scale_stylesheet(qss))
+    except Exception:
+        pass
+
+
 def main():
+    scale = get_scale_factor()
+
     app = QApplication(sys.argv)
-    app.setApplicationName("PharmaSys")
+    app.setStyle("Fusion")
+    app.setApplicationName("RTX")
     app.setApplicationVersion(VERSION)
 
-    font = QFont("Segoe UI", 10)
+    font = QFont("Segoe UI", max(sc(10), 7))
     app.setFont(font)
+    load_stylesheet(app, scale)
 
-    load_stylesheet(app)
     setup_global_hook()
     get_logger()
 

@@ -42,9 +42,22 @@ class SaleController:
                  from_decimal(item["unit_price"]), from_decimal(item["total_price"])),
             )
             sale_item_id = cursor2.lastrowid
+            # Deduct strip-equivalent qty from stock (total_price / sale_price per strip)
+            prod = self.db.fetchone(
+                "SELECT sale_price, strips_per_pack FROM products WHERE id = ?",
+                (item["product_id"],),
+            )
+            if prod:
+                sp = to_decimal(prod["sale_price"])
+                if sp:
+                    strip_eq = int(to_decimal(item["total_price"]) / sp)
+                else:
+                    strip_eq = int(item["quantity"])
+            else:
+                strip_eq = int(item["quantity"])
             self.db.execute(
                 "UPDATE products SET stock_quantity = stock_quantity - ? WHERE id = ?",
-                (item["quantity"], item["product_id"]),
+                (max(strip_eq, 0), item["product_id"]),
             )
 
             product = self.db.fetchone(

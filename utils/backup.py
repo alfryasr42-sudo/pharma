@@ -8,7 +8,7 @@ from pathlib import Path
 class DatabaseBackup:
     def __init__(self, db_path: str, backup_dir: str = None, cloud_dir: str = None):
         self.db_path = db_path
-        self.backup_dir = backup_dir or str(Path.home() / "PharmaSysBackups")
+        self.backup_dir = backup_dir or str(Path.home() / "RTXBackups")
         self.cloud_dir = cloud_dir
 
     def create_backup(self) -> str:

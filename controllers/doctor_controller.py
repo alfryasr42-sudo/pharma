@@ -11,6 +11,14 @@ class DoctorController:
             "SELECT * FROM doctors WHERE is_active = 1 ORDER BY name"
         )
 
+    def get_doctors_with_rules(self):
+        return self.db.fetchall(
+            """SELECT DISTINCT d.* FROM doctors d
+               INNER JOIN doctor_reward_rules r ON d.id = r.doctor_id
+               WHERE d.is_active = 1 AND r.is_active = 1
+               ORDER BY d.name"""
+        )
+
     def search(self, query: str):
         return self.db.fetchall(
             "SELECT * FROM doctors WHERE name LIKE ? AND is_active = 1 ORDER BY name LIMIT 20",
@@ -97,6 +105,35 @@ class DoctorController:
             "reward_value": from_decimal(reward),
             "rule_id": rule["id"],
         }
+
+    def get_rules_for_product(self, product_id: int):
+        """Get active reward rules for a specific product, joined with doctor names."""
+        return self.db.fetchall(
+            """SELECT r.*, d.name as doctor_name
+               FROM doctor_reward_rules r
+               JOIN doctors d ON r.doctor_id = d.id
+               WHERE r.product_id = ? AND r.is_active = 1
+               ORDER BY d.name""",
+            (product_id,),
+        )
+
+    def set_product_rules(self, product_id: int, rules: list, default_deal_type: str = "deal"):
+        """Replace all reward rules for a product with new ones.
+        Each rule dict: {doctor_id, reward_value (percentage as str), deal_type}
+        """
+        self.db.execute(
+            "UPDATE doctor_reward_rules SET is_active = 0 WHERE product_id = ?",
+            (product_id,),
+        )
+        for rule in rules:
+            self.db.execute(
+                """INSERT INTO doctor_reward_rules
+                   (doctor_id, product_id, reward_type, reward_value, deal_type)
+                   VALUES (?, ?, 'percentage', ?, ?)""",
+                (rule["doctor_id"], product_id,
+                 from_decimal(to_decimal(rule["reward_value"])),
+                 rule.get("deal_type", default_deal_type)),
+            )
 
     def record_reward(self, sale_id: int, sale_item_id: int, product_id: int,
                       doctor_id: int, reward_type: str, reward_value: str,
@@ -216,4 +253,16 @@ class DoctorController:
                WHERE CAST(dr.doctor_share AS REAL) > 0
                GROUP BY dr.doctor_id
                ORDER BY d.name"""
+        )
+
+    def get_doctor_products(self, doctor_id: int):
+        """Returns all products that have active deal/discount rules for this doctor."""
+        return self.db.fetchall(
+            """SELECT p.id as product_id, p.name as product_name,
+                      r.reward_value, r.deal_type, r.id as rule_id
+               FROM doctor_reward_rules r
+               JOIN products p ON r.product_id = p.id
+               WHERE r.doctor_id = ? AND r.is_active = 1
+               ORDER BY p.name""",
+            (doctor_id,),
         )

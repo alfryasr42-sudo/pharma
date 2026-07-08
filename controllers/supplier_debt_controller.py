@@ -88,6 +88,32 @@ class SupplierDebtController:
             (debt_id,),
         )
 
+    def get_suppliers_with_unpaid_debts(self):
+        return self.db.fetchall("""
+            SELECT DISTINCT s.id, s.name
+            FROM suppliers s
+            JOIN supplier_debts sd ON sd.supplier_id = s.id
+            WHERE sd.status IN ('pending', 'partial')
+            ORDER BY s.name
+        """)
+
+    def get_suppliers_with_debt_totals(self):
+        return self.db.fetchall("""
+            SELECT s.id, s.name, CAST(SUM(sd.remaining_amount) AS REAL) as total_remaining
+            FROM suppliers s
+            JOIN supplier_debts sd ON sd.supplier_id = s.id
+            WHERE sd.status IN ('pending', 'partial')
+            GROUP BY s.id, s.name
+            ORDER BY s.name
+        """)
+
+    def get_unpaid_debts(self, supplier_id: int):
+        return self.db.fetchall("""
+            SELECT * FROM supplier_debts
+            WHERE supplier_id = ? AND status IN ('pending', 'partial')
+            ORDER BY created_at DESC
+        """, (supplier_id,))
+
     def get_total_pending(self):
         rows = self.db.fetchall(
             "SELECT remaining_amount FROM supplier_debts WHERE status != 'paid'"

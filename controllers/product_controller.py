@@ -40,8 +40,8 @@ class ProductController:
             """INSERT INTO products
                (barcode, name, scientific_name, category_id, supplier_id,
                 sale_price, purchase_price, stock_quantity, min_stock, expiry_date,
-                strips_per_pack, pieces_per_strip)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                strips_per_pack, pieces_per_strip, is_barcoded)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 data["barcode"], data["name"], data.get("scientific_name"),
                 data.get("category_id"), data.get("supplier_id"),
@@ -49,6 +49,7 @@ class ProductController:
                 data.get("stock_quantity", 0), data.get("min_stock", 10),
                 data.get("expiry_date"),
                 data.get("strips_per_pack", 1), data.get("pieces_per_strip", 1),
+                data.get("is_barcoded", 1),
             ),
         )
         return self.db.fetchone("SELECT last_insert_rowid() as id")["id"]

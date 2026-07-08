@@ -6,37 +6,17 @@ from functools import wraps
 from pathlib import Path
 from utils.modern_msgbox import ModernMessageBox as QMessageBox
 
-from cryptography.fernet import Fernet
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+import hashlib
 import base64
 
 LOG_DIR = Path(__file__).parent.parent / "data"
 LOG_FILE = LOG_DIR / "error.log"
-KEY_FILE = LOG_DIR / ".log_key"
 
 _logger = None
 
 
-def _get_or_create_key():
-    if KEY_FILE.exists():
-        with open(KEY_FILE, "rb") as f:
-            return f.read()
-    salt = b"PharmaSys_salt_2026"
-    kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=salt, iterations=100000)
-    key = base64.urlsafe_b64encode(kdf.derive(b"PharmaSys_Log_Key_2026"))
-    with open(KEY_FILE, "wb") as f:
-        f.write(key)
-    return key
-
-
 def _encrypt_text(plaintext: str) -> str:
-    try:
-        key = _get_or_create_key()
-        cipher = Fernet(key)
-        return cipher.encrypt(plaintext.encode("utf-8")).decode("utf-8")
-    except Exception:
-        return plaintext
+    return base64.b64encode(plaintext.encode("utf-8")).decode("utf-8")
 
 
 def _decrypt_logs() -> str:
@@ -45,14 +25,12 @@ def _decrypt_logs() -> str:
     with open(LOG_FILE, "r", encoding="utf-8") as f:
         lines = f.readlines()
     decrypted = []
-    key = _get_or_create_key()
-    cipher = Fernet(key)
     for line in lines:
         line = line.strip()
         if not line:
             continue
         try:
-            decrypted.append(cipher.decrypt(line.encode("utf-8")).decode("utf-8"))
+            decrypted.append(base64.b64decode(line.encode("utf-8")).decode("utf-8"))
         except Exception:
             decrypted.append(line)
     return "\n".join(decrypted)
@@ -83,7 +61,7 @@ def get_logger():
 
     LOG_DIR.mkdir(exist_ok=True)
 
-    _logger = logging.getLogger("PharmaSys")
+    _logger = logging.getLogger("RTX")
     _logger.setLevel(logging.ERROR)
 
     if _logger.handlers:

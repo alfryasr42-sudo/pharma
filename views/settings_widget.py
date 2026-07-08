@@ -1,9 +1,11 @@
+import os
+import datetime
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QTableWidget, QTableWidgetItem, QHeaderView,
     QDialog, QFormLayout, QMessageBox, QAbstractItemView,
     QGroupBox, QComboBox, QFrame, QGraphicsDropShadowEffect,
-    QStackedWidget, QGridLayout, QCheckBox
+    QStackedWidget, QGridLayout, QCheckBox, QFileDialog
 )
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QColor, QFont
@@ -373,9 +375,9 @@ class SettingsWidget(QWidget):
             pw_btn.setFixedHeight(34)
             pw_btn.setMinimumWidth(100)
             pw_btn.setStyleSheet(f"""
-                QPushButton{{font-size:13px;font-weight:700;background:#d97706;color:#fff;
-                           border:2px solid #f59e0b;border-radius:6px;padding:0 10px}}
-                QPushButton:hover{{background:#b45309;border-color:#d97706}}
+                QPushButton{{font-size:13px;font-weight:700;background:#0d9488;color:#fff;
+                           border:2px solid #0d9488;border-radius:6px;padding:0 10px}}
+                QPushButton:hover{{background:#0f766e;border-color:#0d9488}}
             """)
             pw_btn.clicked.connect(lambda checked, uid=u["id"]: self._change_password(uid))
 
@@ -489,6 +491,7 @@ class SettingsWidget(QWidget):
         save_btn.setCursor(Qt.PointingHandCursor)
         save_btn.setFixedHeight(42)
         save_btn.setStyleSheet(f"QPushButton{{background:{_GREEN};color:#fff;font-weight:700;font-size:14px;border:none;border-radius:8px;padding:0 28px}} QPushButton:hover{{background:#059669}}")
+        save_btn.clicked.connect(self._save_system_settings)
         br = QHBoxLayout()
         br.addStretch()
         br.addWidget(save_btn)
@@ -576,6 +579,80 @@ class SettingsWidget(QWidget):
 
         layout.addWidget(perm_group, 1)
 
+        # ── Backup / Restore Card ──
+        backup_group = QFrame()
+        backup_group.setStyleSheet(f"QFrame{{background:{_CARD};border:1.5px solid {_BORD};border-radius:12px}}")
+        bk = QVBoxLayout(backup_group)
+        bk.setContentsMargins(24, 20, 24, 20)
+        bk.setSpacing(12)
+
+        bk_hdr = QHBoxLayout()
+        bk_icon = QLabel("💾")
+        bk_icon.setStyleSheet("font-size:18px;background:transparent")
+        bk_title = QLabel("النسخ الاحتياطي للبيانات")
+        bk_title.setStyleSheet(f"font-size:17px;font-weight:700;color:{_GREEN};background:transparent")
+        bk_hdr.addWidget(bk_icon)
+        bk_hdr.addSpacing(6)
+        bk_hdr.addWidget(bk_title)
+        bk_hdr.addStretch()
+        bk.addLayout(bk_hdr)
+
+        bk_sep = QFrame()
+        bk_sep.setFixedHeight(1)
+        bk_sep.setStyleSheet(f"background:{_BORD}")
+        bk.addWidget(bk_sep)
+
+        bk_desc = QLabel("إنشاء نسخة احتياطية من قاعدة البيانات (المواد، الفواتير، المستخدمين، إلخ)\n"
+                         "واسترجاعها عند الحاجة. يوصى بعمل نسخة احتياطية أسبوعياً.")
+        bk_desc.setStyleSheet(f"font-size:13px;color:{_MUTED};background:transparent;line-height:1.6;")
+        bk_desc.setWordWrap(True)
+        bk.addWidget(bk_desc)
+
+        bk_btn_row = QHBoxLayout()
+        bk_btn_row.setSpacing(12)
+
+        self.btn_backup = QPushButton("💾 إنشاء نسخة احتياطية")
+        self.btn_backup.setCursor(Qt.PointingHandCursor)
+        self.btn_backup.setFixedHeight(42)
+        self.btn_backup.setStyleSheet(f"""
+            QPushButton{{background:{_GREEN};color:#fff;font-weight:700;font-size:14px;
+                       border:none;border-radius:8px;padding:0 24px}}
+            QPushButton:hover{{background:#059669}}
+        """)
+        self.btn_backup.clicked.connect(self._do_backup)
+        bk_btn_row.addWidget(self.btn_backup)
+
+        self.btn_restore = QPushButton("📂 استرجاع نسخة")
+        self.btn_restore.setCursor(Qt.PointingHandCursor)
+        self.btn_restore.setFixedHeight(42)
+        self.btn_restore.setStyleSheet(f"""
+            QPushButton{{background:{_PURPLE};color:#fff;font-weight:700;font-size:14px;
+                       border:none;border-radius:8px;padding:0 24px}}
+            QPushButton:hover{{background:#6d28d9}}
+        """)
+        self.btn_restore.clicked.connect(self._do_restore)
+        bk_btn_row.addWidget(self.btn_restore)
+
+        bk_btn_row.addStretch()
+        bk.addLayout(bk_btn_row)
+
+        # Info label
+        self._bk_info = QLabel("")
+        self._bk_info.setStyleSheet(f"font-size:12px;color:{_MUTED};background:transparent;")
+        bk.addWidget(self._bk_info)
+
+        layout.addWidget(backup_group)
+
+        # Init backup info
+        db_path = self._get_db_path()
+        if os.path.exists(db_path):
+            mtime = os.path.getmtime(db_path)
+            last_mod = datetime.datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M")
+            size_kb = os.path.getsize(db_path) / 1024
+            self._bk_info.setText(f"📁 قاعدة البيانات: {size_kb:.0f} KB  |  آخر تعديل: {last_mod}")
+        else:
+            self._bk_info.setText("⚠️ قاعدة البيانات غير موجودة")
+
     def _save_system_settings(self):
         new_name = self.pharmacy_name_inp.text().strip()
         show_deal = '1' if self.show_deal_cost_cb.isChecked() else '0'
@@ -595,7 +672,71 @@ class SettingsWidget(QWidget):
         else:
             QMessageBox.warning(self, "تنبيه", "يرجى كتابة اسم الصيدلية.")
 
+    def _get_db_path(self):
+        from pathlib import Path
+        base = Path(__file__).resolve().parent.parent / "data"
+        base.mkdir(parents=True, exist_ok=True)
+        return str(base / "pharma.db")
 
+    def _do_backup(self):
+        import shutil
+        src = self._get_db_path()
+        if not os.path.exists(src):
+            QMessageBox.warning(self, "خطأ", "قاعدة البيانات غير موجودة في المسار المتوقع.")
+            return
+
+        default_name = f"RTX_backup_{datetime.date.today().strftime('%Y%m%d_%H%M%S')}.bak"
+        dest, _ = QFileDialog.getSaveFileName(
+            self, "حفظ النسخة الاحتياطية", default_name,
+            "ملفات النسخ الاحتياطي (*.bak);;جميع الملفات (*.*)"
+        )
+        if not dest:
+            return
+
+        try:
+            # Checkpoint WAL to ensure all data is flushed to main db file
+            self.db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            shutil.copy2(src, dest)
+            size_mb = os.path.getsize(dest) / (1024 * 1024)
+            self._bk_info.setText(f"✅ آخر نسخة: {os.path.basename(dest)} ({size_mb:.1f} MB)")
+            QMessageBox.information(self, "✓ تم",
+                f"تم إنشاء النسخة الاحتياطية بنجاح.\n"
+                f"الموقع: {dest}\n"
+                f"الحجم: {size_mb:.1f} MB")
+        except Exception as e:
+            QMessageBox.critical(self, "خطأ", f"فشل إنشاء النسخة الاحتياطية:\n{str(e)}")
+
+    def _do_restore(self):
+        import shutil
+        src, _ = QFileDialog.getOpenFileName(
+            self, "اختر ملف النسخة الاحتياطية", "",
+            "ملفات النسخ الاحتياطي (*.bak);;جميع الملفات (*.*)"
+        )
+        if not src:
+            return
+
+        confirm = QMessageBox.question(self, "تأكيد الاسترجاع",
+            "⚠️ تحذير: استرجاع النسخة الاحتياطية سيحل محل جميع البيانات الحالية!\n\n"
+            "جميع الفواتير والمواد والمستخدمين والإعدادات الحالية ستُستبدل.\n"
+            "لا يمكن التراجع عن هذا الإجراء.\n\n"
+            "هل أنت متأكد من الاستمرار؟",
+            QMessageBox.Yes | QMessageBox.No)
+        if confirm != QMessageBox.Yes:
+            return
+
+        try:
+            dest = self._get_db_path()
+            # Close DB connection to release file lock
+            self.db.close()
+            shutil.copy2(src, dest)
+            # Reconnect
+            self.db = DatabaseManager()
+            self._bk_info.setText(f"✅ تم استرجاع النسخة: {os.path.basename(src)}")
+            QMessageBox.information(self, "✓ تم",
+                "تم استرجاع النسخة الاحتياطية بنجاح.\n"
+                "يرجى إعادة تشغيل البرنامج لتطبيق التغييرات بالكامل.")
+        except Exception as e:
+            QMessageBox.critical(self, "خطأ", f"فشل استرجاع النسخة:\n{str(e)}")
 class UserDialog(QDialog):
     def __init__(self, parent=None, user=None):
         super().__init__(parent)

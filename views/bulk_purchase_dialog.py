@@ -14,7 +14,7 @@ from controllers.supplier_debt_controller import SupplierDebtController
 from controllers.supplier_controller import SupplierController
 from database.connection import DatabaseManager
 from decimal import Decimal
-from utils.decimal_handler import to_decimal, format_currency, DECIMAL_ZERO
+from utils.decimal_handler import to_decimal, format_currency, DECIMAL_ZERO, round_to_nearest_250
 
 _INP_SS = (
     "QLineEdit,QSpinBox,QDoubleSpinBox,QDateEdit,QComboBox{"
@@ -53,6 +53,7 @@ def _make_combo(items, h=50):
     model = QStringListModel(texts, cb)
     comp = QCompleter(model, cb)
     comp.setCaseSensitivity(Qt.CaseInsensitive)
+    comp.setFilterMode(Qt.MatchContains)
     comp.setCompletionMode(QCompleter.PopupCompletion)
     cb.setCompleter(comp)
     return cb
@@ -247,7 +248,7 @@ class BulkItemDialog(QDialog):
             cl.addWidget(_fl2("💵  سعر الشراء — للباكيت / العبوة"))
             self.purchase_price_input = QDoubleSpinBox()
             self.purchase_price_input.setRange(0, 99999999)
-            self.purchase_price_input.setDecimals(2)
+            self.purchase_price_input.setDecimals(0)
             self.purchase_price_input.setLocale(locale_iqd)
             self.purchase_price_input.setGroupSeparatorShown(True)
             self.purchase_price_input.setFixedHeight(54)
@@ -337,7 +338,7 @@ class BulkItemDialog(QDialog):
             cl.addWidget(_fl2("💵  سعر البيع — للقطعة / الشريط"))
             self.sale_price_input = QDoubleSpinBox()
             self.sale_price_input.setRange(0, 99999999)
-            self.sale_price_input.setDecimals(2)
+            self.sale_price_input.setDecimals(0)
             self.sale_price_input.setLocale(locale_iqd)
             self.sale_price_input.setGroupSeparatorShown(True)
             self.sale_price_input.setFixedHeight(54)
@@ -410,7 +411,7 @@ class BulkItemDialog(QDialog):
             "min_stock": self.min_stock_spin.value(),
             "strips_per_pack": self.qty_in_pack_spin.value(),
             "pieces_per_strip": 1,
-            "sale_price": self.sale_price_input.value(),
+            "sale_price": round_to_nearest_250(to_decimal(self.sale_price_input.value())),
         }
 
     def _save(self):
@@ -548,7 +549,7 @@ class BulkPurchaseDialog(QDialog):
 
         self.invoice_total_spin = QDoubleSpinBox()
         self.invoice_total_spin.setRange(0, 999999999)
-        self.invoice_total_spin.setDecimals(2)
+        self.invoice_total_spin.setDecimals(0)
         self.invoice_total_spin.setLocale(locale_iqd)
         self.invoice_total_spin.setGroupSeparatorShown(True)
         self.invoice_total_spin.setFixedHeight(50)
@@ -557,14 +558,14 @@ class BulkPurchaseDialog(QDialog):
 
         self.paid_spin = QDoubleSpinBox()
         self.paid_spin.setRange(0, 999999999)
-        self.paid_spin.setDecimals(2)
+        self.paid_spin.setDecimals(0)
         self.paid_spin.setLocale(locale_iqd)
         self.paid_spin.setGroupSeparatorShown(True)
         self.paid_spin.setFixedHeight(50)
         self.paid_spin.setStyleSheet(_INP_NUM_SS + "QDoubleSpinBox{min-width:130px}")
         self.paid_spin.valueChanged.connect(self._recalc_remain)
 
-        self.remain_lbl = QLabel("0.00")
+        self.remain_lbl = QLabel("0")
         self.remain_lbl.setMinimumHeight(50)
         self.remain_lbl.setStyleSheet(
             "font-size:22px;font-weight:800;color:#7ba3ff;background:#0b1120;"
@@ -796,7 +797,6 @@ class BulkPurchaseDialog(QDialog):
                 invoice_number=self.inv_num_inp.text().strip() or None,
                 invoice_total=inv_total,
                 paid_amount=paid,
-                remaining=inv_total - paid,
                 items=self._items,
                 notes=self.notes_inp.text().strip() or None,
             )
